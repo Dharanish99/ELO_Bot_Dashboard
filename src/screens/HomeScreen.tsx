@@ -11,13 +11,20 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
-import { colors, spacing } from '../theme';
+import { Ionicons } from '@expo/vector-icons';
+import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
-import { RobotStateBadge } from '../components/RobotStateBadge';
-import { ModeToggleButton } from '../components/ModeToggleButton';
-import { PrivacyCard } from '../components/PrivacyCard';
-import { SessionTimeIndicator } from '../components/SessionTimeIndicator';
+
+// Components
+import { EloIdentityHeader } from '../components/EloIdentityHeader';
 import { ConnectionBanner } from '../components/ConnectionBanner';
+import { RobotStateBadge } from '../components/RobotStateBadge';
+import { TargetSelector } from '../components/TargetSelector';
+import { SafetyStatusCard } from '../components/SafetyStatusCard';
+import { CommandButtons } from '../components/CommandButtons';
+import { SessionTimeIndicator } from '../components/SessionTimeIndicator';
+import { PrivacyCard } from '../components/PrivacyCard';
+import { SubsystemStatusBar } from '../components/SubsystemStatusBar';
 import { RootTabParamList } from '../types';
 
 type HomeScreenNavProp = BottomTabNavigationProp<RootTabParamList, 'Home'>;
@@ -25,53 +32,46 @@ type HomeScreenNavProp = BottomTabNavigationProp<RootTabParamList, 'Home'>;
 export const HomeScreen: React.FC = () => {
   const navigation = useNavigation<HomeScreenNavProp>();
   const {
+    // Legacy / general state
     robotMode,
     modeUpdatedAt,
-    isModeChanging,
-    toggleRobotMode,
     isConnected,
     isUnreachable,
     retryConnection,
+
+    // Phase C states & commands
+    eloOnline,
+    eloState,
+    selectedTargetId,
+    targets,
+    obstacleDetected,
+    obstacleDetail,
+    aiConnected,
+    audioReady,
+    commandPending,
+    commandError,
+    clearCommandError,
+    selectTarget,
+    requestFollow,
+    requestInteract,
+    requestStop,
   } = useELO();
 
   const [refreshing, setRefreshing] = useState(false);
 
-  // Staggered fade-in for sections
-  const section1 = useRef(new Animated.Value(0)).current;
-  const section2 = useRef(new Animated.Value(0)).current;
-  const section3 = useRef(new Animated.Value(0)).current;
-  const section4 = useRef(new Animated.Value(0)).current;
-
-  // Pulse animation for status dot
-  const pulseAnim = useRef(new Animated.Value(1)).current;
+  // Entrance animations for sections
+  const animHeader = useRef(new Animated.Value(0)).current;
+  const animHero = useRef(new Animated.Value(0)).current;
+  const animControls = useRef(new Animated.Value(0)).current;
+  const animSecondary = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    // Staggered entrance
-    const anims = [section1, section2, section3, section4];
-    anims.forEach((anim, i) => {
-      Animated.timing(anim, {
-        toValue: 1,
-        duration: 400,
-        delay: i * 100,
-        useNativeDriver: true,
-      }).start();
-    });
-
-    // Pulse loop for status dot
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 0.3,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 1200,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
+    Animated.stagger(100, [
+      Animated.timing(animHeader, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(animHero, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(animControls, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(animSecondary, { toValue: 1, duration: 400, useNativeDriver: true }),
+    ]).start();
   }, []);
 
   const onRefresh = async () => {
@@ -87,27 +87,22 @@ export const HomeScreen: React.FC = () => {
     navigation.navigate('Settings');
   };
 
+  // Find label of confirmed selected target
+  const confirmedTarget = targets.find((t) => t.id === selectedTargetId);
+  const targetLabel = confirmedTarget ? confirmedTarget.label : selectedTargetId ? `Target #${selectedTargetId}` : null;
+
+  // Effective robot state (prefer Phase C eloState, fallback to robotMode)
+  const currentEffectiveState = eloOnline ? eloState : robotMode;
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* Minimal top bar — just the status dot */}
-      <View style={styles.topBar}>
-        <Text style={styles.screenTitle}>Control</Text>
-        <TouchableOpacity onPress={handleOpenSettings} activeOpacity={0.6}>
-          <Animated.View
-            style={[
-              styles.statusDot,
-              {
-                backgroundColor: isConnected
-                  ? colors.dotOnline
-                  : isUnreachable
-                  ? colors.dotOffline
-                  : colors.dotSyncing,
-                opacity: isConnected ? pulseAnim : 1,
-              },
-            ]}
-          />
-        </TouchableOpacity>
-      </View>
+      {/* 1. Identity Header */}
+      <Animated.View style={{ opacity: animHeader }}>
+        <EloIdentityHeader
+          isOnline={isConnected && eloOnline}
+          lastUpdated={modeUpdatedAt}
+        />
+      </Animated.View>
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -120,35 +115,73 @@ export const HomeScreen: React.FC = () => {
         }
         showsVerticalScrollIndicator={false}
       >
-        {/* Connection banner */}
+        {/* Connection banner if offline */}
         <ConnectionBanner onPressSettings={handleOpenSettings} />
 
-        {/* Section 1: Robot State Badge */}
-        <Animated.View style={{ opacity: section1 }}>
+        {/* Command Error Alert (if any rejected command) */}
+        {commandError ? (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={18} color={colors.accent} style={{ marginRight: spacing.sm }} />
+            <Text style={styles.errorBannerText}>{commandError}</Text>
+            <TouchableOpacity onPress={clearCommandError} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Ionicons name="close" size={18} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {/* 2. Hero: Robot State Badge */}
+        <Animated.View style={{ opacity: animHero }}>
           <RobotStateBadge
-            mode={robotMode}
+            mode={currentEffectiveState}
             updatedAt={modeUpdatedAt}
+            isConnected={isConnected}
+            targetLabel={targetLabel}
+            commandPending={commandPending}
+          />
+        </Animated.View>
+
+        {/* 3. Subsystem Status Bar (AI & Audio) */}
+        <Animated.View style={{ opacity: animHero }}>
+          <SubsystemStatusBar
+            aiConnected={aiConnected}
+            audioReady={audioReady}
             isConnected={isConnected}
           />
         </Animated.View>
 
-        {/* Section 2: Mode Toggle */}
-        <Animated.View style={{ opacity: section2 }}>
-          <ModeToggleButton
-            currentMode={robotMode}
-            isPending={isModeChanging}
-            onToggle={toggleRobotMode}
-            disabled={!isConnected}
+        {/* 4. Controls Section: Target Selector, Safety Card, Command Buttons */}
+        <Animated.View style={{ opacity: animControls }}>
+          {/* Target Selector */}
+          <TargetSelector
+            targets={targets}
+            selectedTargetId={selectedTargetId}
+            commandPending={commandPending}
+            isConnected={isConnected}
+            onSelectTarget={selectTarget}
+          />
+
+          {/* Safety & Obstacle Card */}
+          <SafetyStatusCard
+            obstacleDetected={obstacleDetected}
+            obstacleDetail={obstacleDetail}
+            robotState={currentEffectiveState}
+          />
+
+          {/* Primary Command Buttons: FOLLOW, INTERACT, STOP */}
+          <CommandButtons
+            currentMode={currentEffectiveState}
+            commandPending={commandPending}
+            isConnected={isConnected}
+            selectedTargetId={selectedTargetId}
+            onRequestFollow={requestFollow}
+            onRequestInteract={requestInteract}
+            onRequestStop={requestStop}
           />
         </Animated.View>
 
-        {/* Section 3: Session time */}
-        <Animated.View style={{ opacity: section3 }}>
+        {/* 5. Secondary Information & Controls */}
+        <Animated.View style={{ opacity: animSecondary }}>
           <SessionTimeIndicator />
-        </Animated.View>
-
-        {/* Section 4: Privacy toggles */}
-        <Animated.View style={{ opacity: section4 }}>
           <PrivacyCard />
         </Animated.View>
       </ScrollView>
@@ -161,25 +194,25 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
-  topBar: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: spacing.xl,
-    paddingVertical: spacing.lg,
-  },
-  screenTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    letterSpacing: -0.5,
-  },
-  statusDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
   scrollContent: {
     paddingBottom: spacing.xxxl,
+  },
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.accentMuted,
+    borderRadius: radius.md,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm + 2,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 59, 48, 0.3)',
+  },
+  errorBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: colors.accent,
+    fontWeight: '500',
   },
 });

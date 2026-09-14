@@ -1,4 +1,7 @@
 import {
+  CommandResponse,
+  EloStatusResponse,
+  EloTarget,
   HealthResponse,
   PrivacyResponse,
   RestrictionsResponse,
@@ -199,6 +202,82 @@ export const api = {
     });
     if (!res.ok) {
       throw new ApiError(`Failed to update microphone mute (${res.status})`, res.status);
+    }
+    return res.json();
+  },
+
+  // ─── Phase C: ELO Core Pi Integration ───
+
+  /**
+   * Full ELO status from Pi Core (online, state, target, obstacle, AI, audio)
+   */
+  async getEloStatus(baseUrl: string): Promise<EloStatusResponse> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/api/elo/status`, { method: 'GET' }, 2500);
+    if (!res.ok) {
+      throw new ApiError(`Failed to fetch ELO status (${res.status})`, res.status);
+    }
+    return res.json();
+  },
+
+  /**
+   * List of detected/trackable targets from Pi vision system
+   */
+  async getTargets(baseUrl: string): Promise<EloTarget[]> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/api/elo/targets`, { method: 'GET' }, 2500);
+    if (!res.ok) {
+      throw new ApiError(`Failed to fetch targets (${res.status})`, res.status);
+    }
+    const data = await res.json();
+    return data.targets || [];
+  },
+
+  /**
+   * Parent explicitly selects a tracking target
+   */
+  async selectTarget(baseUrl: string, targetId: string): Promise<CommandResponse> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/api/elo/target`, {
+      method: 'POST',
+      body: JSON.stringify({ target_id: targetId }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new ApiError(errData.error || `Target selection failed (${res.status})`, res.status);
+    }
+    return res.json();
+  },
+
+  /**
+   * Request mode change: FOLLOW or INTERACT
+   * Pi validates command and returns confirmed state.
+   */
+  async setEloMode(baseUrl: string, mode: 'FOLLOW' | 'INTERACT'): Promise<CommandResponse> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/api/elo/mode`, {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new ApiError(errData.error || `Mode command failed (${res.status})`, res.status);
+    }
+    return res.json();
+  },
+
+  /**
+   * Emergency stop — highest priority safety command from dashboard
+   */
+  async emergencyStop(baseUrl: string): Promise<CommandResponse> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/api/elo/stop`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+    });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new ApiError(errData.error || `Stop command failed (${res.status})`, res.status);
     }
     return res.json();
   },

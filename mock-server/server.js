@@ -1,6 +1,6 @@
 /**
  * ELO Companion Robot - Mock Backend Server
- * Implements the 8 API endpoints specified in the ELO Parent/Control App contract.
+ * Implements the 8 original API endpoints + Phase C ELO Core Pi endpoints.
  * Pure Node.js (zero external dependencies).
  * Run: node mock-server/server.js [port] (default port: 8000)
  */
@@ -9,7 +9,7 @@ const http = require('http');
 
 const PORT = process.env.PORT || 8000;
 
-// In-memory robot state
+// In-memory robot state (original)
 let robotState = {
   mode: 'moving', // 'moving' | 'interacting'
   updatedAt: new Date().toISOString(),
@@ -28,6 +28,23 @@ let currentSession = {
   active: true,
   elapsedMinutes: 18,
 };
+
+// ─── Phase C: ELO Core State ───
+
+let eloCore = {
+  state: 'stopped',          // 'moving' | 'interacting' | 'stopped' | 'unknown'
+  target_id: null,           // currently selected target
+  obstacle: false,
+  obstacle_detail: null,
+  ai_connected: true,
+  audio_ready: true,
+};
+
+let availableTargets = [
+  { id: 'person_1', label: 'Person 1', confidence: 0.92, distance: 2.1 },
+  { id: 'person_2', label: 'Person 2', confidence: 0.87, distance: 3.5 },
+  { id: 'person_3', label: 'Person 3', confidence: 0.74, distance: 5.0 },
+];
 
 // Seeded session reports
 let sessionReports = [
@@ -172,8 +189,6 @@ const server = http.createServer(async (req, res) => {
     // 5. GET /api/reports
     if (method === 'GET' && pathname === '/api/reports') {
       const limit = parseInt(url.searchParams.get('limit') || '10', 10);
-      // Exclude reports if privacy was set during session (if simulate)
-      // Return summaries without full transcripts
       const summaries = sessionReports.slice(0, limit).map(rep => {
         const { transcript, ...summary } = rep;
         return summary;
@@ -238,6 +253,110 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { sessionActive: currentSession.active });
     }
 
+    // ─── Phase C: ELO Core Pi Endpoints ───
+
+    // GET /api/elo/status — Full ELO status
+    if (method === 'GET' && pathname === '/api/elo/status') {
+      return sendJson(res, 200, {
+        online: true,
+        state: eloCore.state,
+        target_id: eloCore.target_id,
+        obstacle: eloCore.obstacle,
+        obstacle_detail: eloCore.obstacle_detail,
+        ai_connected: eloCore.ai_connected,
+        audio_ready: eloCore.audio_ready,
+        last_updated: new Date().toISOString(),
+      });
+    }
+
+    // GET /api/elo/targets — Available tracked people
+    if (method === 'GET' && pathname === '/api/elo/targets') {
+      return sendJson(res, 200, { targets: availableTargets });
+    }
+
+    // POST /api/elo/target — Parent selects target
+    if (method === 'POST' && pathname === '/api/elo/target') {
+      const body = await parseJsonBody(req);
+      const targetId = body.target_id;
+      if (!targetId) {
+        return sendJson(res, 400, { success: false, error: 'target_id is required' });
+      }
+      const found = availableTargets.find(t => t.id === targetId);
+      if (!found) {
+        return sendJson(res, 400, { success: false, error: `Target "${targetId}" not found in tracked list` });
+      }
+      eloCore.target_id = targetId;
+      console.log(`[ELO Phase C] Target selected: ${targetId} (${found.label})`);
+      return sendJson(res, 200, { success: true, target_id: targetId });
+    }
+
+    // POST /api/elo/mode — FOLLOW or INTERACT
+    if (method === 'POST' && pathname === '/api/elo/mode') {
+      const body = await parseJsonBody(req);
+      const mode = (body.mode || '').toUpperCase();
+
+      if (mode === 'FOLLOW') {
+        // Validate: must have a valid target selected
+        if (!eloCore.target_id) {
+          return sendJson(res, 400, { success: false, error: 'No target selected. Select a target first.' });
+        }
+        const targetExists = availableTargets.find(t => t.id === eloCore.target_id);
+        if (!targetExists) {
+          return sendJson(res, 400, { success: false, error: 'Selected target is no longer available.' });
+        }
+        // Check obstacle
+        if (eloCore.obstacle) {
+          return sendJson(res, 400, { success: false, error: 'Movement blocked — obstacle detected.', state: 'stopped' });
+        }
+        eloCore.state = 'moving';
+        console.log(`[ELO Phase C] Mode → FOLLOW (target: ${eloCore.target_id})`);
+        return sendJson(res, 200, { success: true, state: 'moving' });
+      }
+
+      if (mode === 'INTERACT') {
+        eloCore.state = 'interacting';
+        console.log(`[ELO Phase C] Mode → INTERACT`);
+        return sendJson(res, 200, { success: true, state: 'interacting' });
+      }
+
+      return sendJson(res, 400, { success: false, error: 'Invalid mode. Must be "FOLLOW" or "INTERACT".' });
+    }
+
+    // POST /api/elo/stop — Emergency stop
+    if (method === 'POST' && pathname === '/api/elo/stop') {
+      eloCore.state = 'stopped';
+      console.log(`[ELO Phase C] EMERGENCY STOP`);
+      return sendJson(res, 200, { success: true, state: 'stopped' });
+    }
+
+    // ─── Phase C: Test helpers ───
+
+    // POST /api/test/toggle-obstacle — Toggle simulated obstacle
+    if (method === 'POST' && pathname === '/api/test/toggle-obstacle') {
+      eloCore.obstacle = !eloCore.obstacle;
+      eloCore.obstacle_detail = eloCore.obstacle ? 'Object detected 30cm ahead' : null;
+      if (eloCore.obstacle && eloCore.state === 'moving') {
+        eloCore.state = 'stopped';
+        console.log(`[ELO Phase C] Obstacle detected — auto-stopped`);
+      }
+      console.log(`[ELO Phase C] Obstacle: ${eloCore.obstacle}`);
+      return sendJson(res, 200, { obstacle: eloCore.obstacle, state: eloCore.state });
+    }
+
+    // POST /api/test/toggle-ai — Toggle AI connection
+    if (method === 'POST' && pathname === '/api/test/toggle-ai') {
+      eloCore.ai_connected = !eloCore.ai_connected;
+      console.log(`[ELO Phase C] AI connected: ${eloCore.ai_connected}`);
+      return sendJson(res, 200, { ai_connected: eloCore.ai_connected });
+    }
+
+    // POST /api/test/toggle-audio — Toggle audio
+    if (method === 'POST' && pathname === '/api/test/toggle-audio') {
+      eloCore.audio_ready = !eloCore.audio_ready;
+      console.log(`[ELO Phase C] Audio ready: ${eloCore.audio_ready}`);
+      return sendJson(res, 200, { audio_ready: eloCore.audio_ready });
+    }
+
     // Route not found
     return sendJson(res, 404, { error: 'Endpoint not found' });
   } catch (error) {
@@ -253,6 +372,20 @@ server.listen(PORT, '0.0.0.0', () => {
   Local URL:   http://localhost:${PORT}
   Network URL: http://0.0.0.0:${PORT}
   Contract:    FastAPI-compatible ELO Mobile Endpoints
+
+  Phase C Endpoints:
+    GET  /api/elo/status    — Full ELO status
+    GET  /api/elo/targets   — Available tracked people
+    POST /api/elo/target    — Select target
+    POST /api/elo/mode      — FOLLOW / INTERACT
+    POST /api/elo/stop      — Emergency stop
+
+  Test Helpers:
+    POST /api/test/toggle-obstacle
+    POST /api/test/toggle-ai
+    POST /api/test/toggle-audio
+    POST /api/test/toggle-session
 ===================================================
 `);
 });
+

@@ -41,6 +41,12 @@ export const colors = {
 
   // Shadows (minimal on dark theme)
   shadow: 'rgba(0, 0, 0, 0.5)',
+
+  // Phase C: semantic state accents (used sparingly per design philosophy)
+  stateMoving: '#4A9EFF',
+  stateInteracting: '#A78BFA',
+  stateStopped: '#888888',
+  stateUnknown: '#FFB020',
 };
 
 export const spacing = {

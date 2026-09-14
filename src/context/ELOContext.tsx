@@ -1,7 +1,12 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { api, normalizeBaseUrl } from '../api/client';
-import { RobotMode, SessionCurrentResponse } from '../types';
+import {
+  EloStatusResponse,
+  EloTarget,
+  RobotMode,
+  SessionCurrentResponse,
+} from '../types';
 
 const STORAGE_KEY_BASE_URL = '@elo_backend_base_url';
 const DEFAULT_BASE_URL = 'http://localhost:8000';
@@ -19,7 +24,7 @@ export interface ELOContextType {
   retryConnection: () => Promise<void>;
   testConnectionUrl: (url: string) => Promise<{ success: boolean; latencyMs?: number; error?: string }>;
 
-  // Robot Mode
+  // Robot Mode (Legacy / compatibility)
   robotMode: RobotMode;
   modeUpdatedAt: string | null;
   isModeChanging: boolean;
@@ -43,6 +48,23 @@ export interface ELOContextType {
 
   // Status flags
   isInitialLoading: boolean;
+
+  // ─── Phase C: ELO Core State & Commands ───
+  eloOnline: boolean;
+  eloState: RobotMode;
+  selectedTargetId: string | null;
+  targets: EloTarget[];
+  obstacleDetected: boolean;
+  obstacleDetail: string | null;
+  aiConnected: boolean;
+  audioReady: boolean;
+  commandPending: string | null;
+  commandError: string | null;
+  clearCommandError: () => void;
+  selectTarget: (targetId: string) => Promise<boolean>;
+  requestFollow: () => Promise<boolean>;
+  requestInteract: () => Promise<boolean>;
+  requestStop: () => Promise<boolean>;
 }
 
 const ELOContext = createContext<ELOContextType | undefined>(undefined);
@@ -60,6 +82,18 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [robotMode, setRobotMode] = useState<RobotMode>('moving');
   const [modeUpdatedAt, setModeUpdatedAt] = useState<string | null>(null);
   const [isModeChanging, setIsModeChanging] = useState<boolean>(false);
+
+  // Phase C: ELO Core states
+  const [eloOnline, setEloOnline] = useState<boolean>(false);
+  const [eloState, setEloState] = useState<RobotMode>('stopped');
+  const [selectedTargetId, setSelectedTargetId] = useState<string | null>(null);
+  const [targets, setTargets] = useState<EloTarget[]>([]);
+  const [obstacleDetected, setObstacleDetected] = useState<boolean>(false);
+  const [obstacleDetail, setObstacleDetail] = useState<string | null>(null);
+  const [aiConnected, setAiConnected] = useState<boolean>(false);
+  const [audioReady, setAudioReady] = useState<boolean>(false);
+  const [commandPending, setCommandPending] = useState<string | null>(null);
+  const [commandError, setCommandError] = useState<string | null>(null);
 
   // Privacy states
   const [excludeFromReport, setExcludeFromReportState] = useState<boolean>(false);
@@ -110,10 +144,36 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     isPollingBusyRef.current = true;
 
     try {
-      // Poll robot mode
-      const stateData = await api.getRobotState(baseUrl);
-      setRobotMode(stateData.mode);
-      setModeUpdatedAt(stateData.updatedAt);
+      // Poll robot mode (legacy endpoint)
+      try {
+        const stateData = await api.getRobotState(baseUrl);
+        setRobotMode(stateData.mode);
+        setModeUpdatedAt(stateData.updatedAt);
+      } catch {
+        // Allowed if Pi only implements /api/elo
+      }
+
+      // Phase C: Poll ELO Core status & targets
+      try {
+        const eloStatus = await api.getEloStatus(baseUrl);
+        setEloOnline(eloStatus.online);
+        setEloState(eloStatus.state);
+        setRobotMode(eloStatus.state);
+        setSelectedTargetId(eloStatus.target_id);
+        setObstacleDetected(eloStatus.obstacle);
+        setObstacleDetail(eloStatus.obstacle_detail || null);
+        setAiConnected(eloStatus.ai_connected);
+        setAudioReady(eloStatus.audio_ready);
+      } catch {
+        setEloOnline(false);
+      }
+
+      try {
+        const targetsList = await api.getTargets(baseUrl);
+        setTargets(targetsList);
+      } catch {
+        // Non-critical
+      }
 
       // Poll current session (graceful 404 handler in client)
       try {
@@ -136,6 +196,7 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         const next = prev + 1;
         if (next >= FAILURE_THRESHOLD) {
           setIsConnected(false);
+          setEloOnline(false);
         }
         return next;
       });
@@ -271,6 +332,102 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     []
   );
 
+  // ─── Phase C: Command Methods ───
+
+  const clearCommandError = useCallback(() => {
+    setCommandError(null);
+  }, []);
+
+  const selectTarget = useCallback(
+    async (targetId: string): Promise<boolean> => {
+      setCommandPending('Selecting target...');
+      setCommandError(null);
+      try {
+        const res = await api.selectTarget(baseUrl, targetId);
+        if (res.success) {
+          setSelectedTargetId(res.target_id || targetId);
+          return true;
+        } else {
+          setCommandError(res.error || 'Failed to select target');
+          return false;
+        }
+      } catch (err: any) {
+        setCommandError(err.message || 'Network error selecting target');
+        return false;
+      } finally {
+        setCommandPending(null);
+      }
+    },
+    [baseUrl]
+  );
+
+  const requestFollow = useCallback(async (): Promise<boolean> => {
+    if (!selectedTargetId) {
+      setCommandError('No target selected. Select a target first.');
+      return false;
+    }
+    setCommandPending('Requesting Follow...');
+    setCommandError(null);
+    try {
+      const res = await api.setEloMode(baseUrl, 'FOLLOW');
+      if (res.success && res.state) {
+        setEloState(res.state);
+        setRobotMode(res.state);
+        return true;
+      } else {
+        setCommandError(res.error || 'Follow command rejected');
+        return false;
+      }
+    } catch (err: any) {
+      setCommandError(err.message || 'Failed to start following');
+      return false;
+    } finally {
+      setCommandPending(null);
+    }
+  }, [baseUrl, selectedTargetId]);
+
+  const requestInteract = useCallback(async (): Promise<boolean> => {
+    setCommandPending('Requesting Interact...');
+    setCommandError(null);
+    try {
+      const res = await api.setEloMode(baseUrl, 'INTERACT');
+      if (res.success && res.state) {
+        setEloState(res.state);
+        setRobotMode(res.state);
+        return true;
+      } else {
+        setCommandError(res.error || 'Interact command rejected');
+        return false;
+      }
+    } catch (err: any) {
+      setCommandError(err.message || 'Failed to switch to interact');
+      return false;
+    } finally {
+      setCommandPending(null);
+    }
+  }, [baseUrl]);
+
+  const requestStop = useCallback(async (): Promise<boolean> => {
+    setCommandPending('Stopping...');
+    setCommandError(null);
+    try {
+      const res = await api.emergencyStop(baseUrl);
+      if (res.success) {
+        setEloState(res.state || 'stopped');
+        setRobotMode(res.state || 'stopped');
+        return true;
+      } else {
+        setCommandError(res.error || 'Stop command rejected');
+        return false;
+      }
+    } catch (err: any) {
+      setCommandError(err.message || 'Failed to stop robot');
+      return false;
+    } finally {
+      setCommandPending(null);
+    }
+  }, [baseUrl]);
+
   const isUnreachable = consecutiveFailures >= FAILURE_THRESHOLD;
 
   return (
@@ -299,6 +456,21 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setDailyLimit,
         refreshRestrictions,
         isInitialLoading,
+        eloOnline,
+        eloState,
+        selectedTargetId,
+        targets,
+        obstacleDetected,
+        obstacleDetail,
+        aiConnected,
+        audioReady,
+        commandPending,
+        commandError,
+        clearCommandError,
+        selectTarget,
+        requestFollow,
+        requestInteract,
+        requestStop,
       }}
     >
       {children}

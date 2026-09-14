@@ -1,4 +1,4 @@
-export type RobotMode = 'moving' | 'interacting';
+export type RobotMode = 'moving' | 'interacting' | 'stopped' | 'unknown';
 
 export interface RobotStateResponse {
   mode: RobotMode;
@@ -8,6 +8,37 @@ export interface RobotStateResponse {
 export interface SessionCurrentResponse {
   elapsedMinutes: number;
   dailyLimitMinutes: number;
+}
+
+// ─── Phase C: ELO Core Pi Integration ───
+
+export interface EloTarget {
+  id: string;
+  label: string;
+  confidence?: number;
+  distance?: number;
+}
+
+export interface EloStatusResponse {
+  online: boolean;
+  state: RobotMode;
+  target_id: string | null;
+  obstacle: boolean;
+  obstacle_detail?: string;
+  ai_connected: boolean;
+  audio_ready: boolean;
+  last_updated: string;
+}
+
+export interface EloTargetsResponse {
+  targets: EloTarget[];
+}
+
+export interface CommandResponse {
+  success: boolean;
+  state?: RobotMode;
+  target_id?: string;
+  error?: string;
 }
 
 export interface TranscriptItem {

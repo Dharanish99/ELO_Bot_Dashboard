@@ -4,11 +4,15 @@ A React Native & Expo companion dashboard for monitoring, configuring, and inter
 
 ## Features
 
-- **Robot State & Mode Control**: Real-time mode tracking and toggling between *Moving* and *Interacting* modes.
+- **Central Control Interface (Phase C)**: Complete control and telemetry surface for ELO Core running on Raspberry Pi.
+- **Vision Target Selection**: View real-time tracked persons and explicitly designate the target person for ELO to follow.
+- **Primary Commands**: `FOLLOW`, `INTERACT`, and `STOP` (Emergency Stop) with strict state validation and transitional feedback.
+- **Safety & Obstacle Monitoring**: Real-time obstacle warnings and automatic motor disengagement alerts (no safety overrides).
+- **Subsystem Telemetry**: Live status indicators for AI Engine and Audio subsystems.
 - **Session & Restriction Management**: Monitor active session times, enforce daily interaction limits, and view progress.
-- **Privacy & Safety Controls**: One-tap microphone muting and session privacy toggling.
-- **Interaction Reports**: Review session logs, summaries, and full interactive dialog transcripts.
-- **Built-in Mock Server**: Simulated FastAPI backend for seamless local development and offline testing.
+- **Privacy & Child Safety**: One-tap microphone muting and session report privacy exclusions.
+- **Interaction Reports**: Review session logs, summaries, and full educational dialogue transcripts.
+- **Built-in Phase C Mock Server**: Simulated FastAPI/Pi backend for offline testing and end-to-end verification.
 
 ## Tech Stack
 
