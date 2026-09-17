@@ -1,0 +1,14 @@
+ELO Phase 1 package
+
+Included:
+- Source code
+- Configuration
+- Dashboard
+- GPIO/motor/ultrasonic test tools
+- Pi setup/install scripts
+- Official model downloader
+- COCO labels
+- Architecture/wiring/research notes
+
+Model binary note:
+The official detect.tflite binary is not embedded in this archive because the build environment cannot resolve external download hosts. setup_pi.sh automatically downloads the exact official TensorFlow Lite SSD-MobileNet V1 quantized COCO model into models/detect.tflite on the Raspberry Pi.

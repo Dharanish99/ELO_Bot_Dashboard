@@ -13,11 +13,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
+import { DEFAULT_ELO_CORE_URL } from '../api/client';
 
 const QUICK_IPS = [
-  { label: 'localhost', url: 'http://localhost:8000' },
-  { label: 'emulator', url: 'http://10.0.2.2:8000' },
-  { label: '192.168.1.42', url: 'http://192.168.1.42:8000' },
+  { label: 'Pi (Default)', url: DEFAULT_ELO_CORE_URL },
+  { label: '192.168.1.100', url: 'http://192.168.1.100:8090' },
+  { label: 'raspberrypi.local', url: 'http://raspberrypi.local:8090' },
 ];
 
 export const SettingsScreen: React.FC = () => {
@@ -74,7 +75,7 @@ export const SettingsScreen: React.FC = () => {
             style={styles.input}
             value={inputUrl}
             onChangeText={setInputUrl}
-            placeholder="http://192.168.1.42:8000"
+            placeholder={DEFAULT_ELO_CORE_URL}
             placeholderTextColor={colors.textMuted}
             autoCapitalize="none"
             autoCorrect={false}
@@ -172,16 +173,15 @@ export const SettingsScreen: React.FC = () => {
         {showGuide && (
           <View style={styles.guideContent}>
             <Text style={styles.guideStep}>
-              1. Connect phone and computer to the same WiFi
+              1. Connect phone and Raspberry Pi to the same WiFi network
             </Text>
             <Text style={styles.guideStep}>
-              2. Find your computer's IP with{' '}
-              <Text style={styles.code}>ipconfig</Text> (Windows) or{' '}
-              <Text style={styles.code}>ifconfig</Text> (Mac)
+              2. Find your Raspberry Pi's IP with{' '}
+              <Text style={styles.code}>hostname -I</Text> on the Pi
             </Text>
             <Text style={styles.guideStep}>
-              3. Run <Text style={styles.code}>npm run mock</Text> on port 8000 and enter{' '}
-              <Text style={styles.code}>http://YOUR_IP:8000</Text> above
+              3. Enter <Text style={styles.code}>http://&lt;PI_IP&gt;:8090</Text> above or configure{' '}
+              <Text style={styles.code}>EXPO_PUBLIC_ELO_CORE_URL</Text> in .env
             </Text>
           </View>
         )}

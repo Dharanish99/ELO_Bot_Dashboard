@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { api, normalizeBaseUrl } from '../api/client';
+import { api, normalizeBaseUrl, DEFAULT_ELO_CORE_URL } from '../api/client';
 import {
   EloStatusResponse,
   EloTarget,
@@ -8,8 +8,7 @@ import {
   SessionCurrentResponse,
 } from '../types';
 
-const STORAGE_KEY_BASE_URL = '@elo_backend_base_url';
-const DEFAULT_BASE_URL = 'http://localhost:8000';
+const STORAGE_KEY_BASE_URL = '@elo_core_base_url';
 const POLLING_INTERVAL_MS = 1500;
 const FAILURE_THRESHOLD = 3;
 
@@ -70,7 +69,7 @@ export interface ELOContextType {
 const ELOContext = createContext<ELOContextType | undefined>(undefined);
 
 export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [baseUrl, setBaseUrlState] = useState<string>(DEFAULT_BASE_URL);
+  const [baseUrl, setBaseUrlState] = useState<string>(DEFAULT_ELO_CORE_URL);
   const [isInitialLoading, setIsInitialLoading] = useState<boolean>(true);
 
   // Connection health
@@ -79,7 +78,7 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSuccessfulPoll, setLastSuccessfulPoll] = useState<Date | null>(null);
 
   // Robot live state
-  const [robotMode, setRobotMode] = useState<RobotMode>('moving');
+  const [robotMode, setRobotMode] = useState<RobotMode>('stopped');
   const [modeUpdatedAt, setModeUpdatedAt] = useState<string | null>(null);
   const [isModeChanging, setIsModeChanging] = useState<boolean>(false);
 
@@ -108,13 +107,23 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const isPollingBusyRef = useRef<boolean>(false);
 
-  // 1. Load saved Base URL on startup
+  // 1. Load saved Base URL on startup with migration from legacy storage
   useEffect(() => {
     async function loadSavedUrl() {
       try {
-        const saved = await AsyncStorage.getItem(STORAGE_KEY_BASE_URL);
-        if (saved) {
+        let saved = await AsyncStorage.getItem(STORAGE_KEY_BASE_URL);
+        if (!saved) {
+          const oldSaved = await AsyncStorage.getItem('@elo_backend_base_url');
+          if (oldSaved && !oldSaved.includes('localhost:8000')) {
+            saved = oldSaved;
+          }
+        }
+        if (saved && !saved.includes('localhost:8000')) {
           setBaseUrlState(normalizeBaseUrl(saved));
+        } else if (process.env.EXPO_PUBLIC_ELO_CORE_URL) {
+          setBaseUrlState(normalizeBaseUrl(process.env.EXPO_PUBLIC_ELO_CORE_URL));
+        } else {
+          setBaseUrlState(DEFAULT_ELO_CORE_URL);
         }
       } catch (err) {
         console.warn('Failed to load saved base URL from AsyncStorage', err);
@@ -134,64 +143,57 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (err) {
       console.warn('Failed to persist base URL', err);
     }
-    // Reset failure counter and trigger poll
+    // Reset failure counter and immediately trigger poll
     setConsecutiveFailures(0);
   }, []);
 
-  // 3. Poll robot state and current session
+  // 3. Poll robot state from Raspberry Pi ELO Core (GET /status, GET /targets)
   const performPoll = useCallback(async () => {
     if (isPollingBusyRef.current) return;
     isPollingBusyRef.current = true;
 
     try {
-      // Poll robot mode (legacy endpoint)
-      try {
-        const stateData = await api.getRobotState(baseUrl);
-        setRobotMode(stateData.mode);
-        setModeUpdatedAt(stateData.updatedAt);
-      } catch {
-        // Allowed if Pi only implements /api/elo
-      }
+      // Primary status poll: Raspberry Pi ELO Core (GET /status)
+      const eloStatus = await api.getEloStatus(baseUrl);
 
-      // Phase C: Poll ELO Core status & targets
-      try {
-        const eloStatus = await api.getEloStatus(baseUrl);
-        setEloOnline(eloStatus.online);
-        setEloState(eloStatus.state);
-        setRobotMode(eloStatus.state);
-        setSelectedTargetId(eloStatus.target_id);
-        setObstacleDetected(eloStatus.obstacle);
-        setObstacleDetail(eloStatus.obstacle_detail || null);
-        setAiConnected(eloStatus.ai_connected);
-        setAudioReady(eloStatus.audio_ready);
-      } catch {
-        setEloOnline(false);
-      }
+      // Connected! Update all live telemetry
+      setEloOnline(eloStatus.online);
+      setEloState(eloStatus.state);
+      setRobotMode(eloStatus.state);
+      setSelectedTargetId(eloStatus.target_id);
+      setObstacleDetected(eloStatus.obstacle);
+      setObstacleDetail(eloStatus.obstacle_detail || null);
+      setAiConnected(eloStatus.ai_connected);
+      setAudioReady(eloStatus.audio_ready);
+      setModeUpdatedAt(eloStatus.last_updated);
 
+      // Poll targets from Pi vision system (GET /targets)
       try {
         const targetsList = await api.getTargets(baseUrl);
         setTargets(targetsList);
-      } catch {
-        // Non-critical
-      }
-
-      // Poll current session (graceful 404 handler in client)
-      try {
-        const sessionData = await api.getCurrentSession(baseUrl);
-        setCurrentSession(sessionData);
-        if (sessionData?.dailyLimitMinutes) {
-          setDailyLimitMinutesState(sessionData.dailyLimitMinutes);
-        }
-      } catch {
-        // If session endpoint fails or 404, we don't break polling
-        setCurrentSession(null);
+      } catch (targetErr) {
+        // Non-critical target sync glitch
       }
 
       // Success marks connection healthy
       setIsConnected(true);
       setConsecutiveFailures(0);
       setLastSuccessfulPoll(new Date());
+
+      // Optional session info if supported
+      try {
+        const sessionData = await api.getCurrentSession(baseUrl);
+        if (sessionData) {
+          setCurrentSession(sessionData);
+          if (sessionData.dailyLimitMinutes) {
+            setDailyLimitMinutesState(sessionData.dailyLimitMinutes);
+          }
+        }
+      } catch {
+        // Graceful ignore
+      }
     } catch (err) {
+      // Connection failed or Pi Core unreachable
       setConsecutiveFailures((prev) => {
         const next = prev + 1;
         if (next >= FAILURE_THRESHOLD) {
@@ -238,17 +240,18 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsModeChanging(true);
 
     try {
-      const response = await api.setRobotMode(baseUrl, targetMode);
-      // Wait for confirmed response from backend
-      if (response && response.mode) {
-        setRobotMode(response.mode);
+      const piMode = targetMode === 'moving' ? 'FOLLOW' : 'INTERACT';
+      const response = await api.setEloMode(baseUrl, piMode);
+      if (response && response.success) {
+        const nextMode = response.state || targetMode;
+        setRobotMode(nextMode);
+        setEloState(nextMode);
         setModeUpdatedAt(new Date().toISOString());
         setIsConnected(true);
         setConsecutiveFailures(0);
       }
     } catch (error: any) {
       console.warn('Mode switch command failed:', error.message);
-      // Increment failure count if it was a network error
       setConsecutiveFailures((prev) => prev + 1);
       throw error;
     } finally {
@@ -319,14 +322,11 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     async (targetUrl: string): Promise<{ success: boolean; latencyMs?: number; error?: string }> => {
       const start = Date.now();
       try {
-        const res = await api.checkHealth(targetUrl);
+        await api.checkHealth(targetUrl);
         const latency = Date.now() - start;
-        if (res.status === 'ok') {
-          return { success: true, latencyMs: latency };
-        }
-        return { success: false, error: `Health status: ${res.status}` };
+        return { success: true, latencyMs: latency };
       } catch (err: any) {
-        return { success: false, error: err.message || 'Cannot reach server' };
+        return { success: false, error: err.message || 'Cannot reach Raspberry Pi Core' };
       }
     },
     []
@@ -348,11 +348,11 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           setSelectedTargetId(res.target_id || targetId);
           return true;
         } else {
-          setCommandError(res.error || 'Failed to select target');
+          setCommandError(res.error || 'Target selection rejected by robot');
           return false;
         }
       } catch (err: any) {
-        setCommandError(err.message || 'Network error selecting target');
+        setCommandError(err.message || 'Failed to select target on Raspberry Pi');
         return false;
       } finally {
         setCommandPending(null);
@@ -363,23 +363,24 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const requestFollow = useCallback(async (): Promise<boolean> => {
     if (!selectedTargetId) {
-      setCommandError('No target selected. Select a target first.');
+      setCommandError('No target selected. Select a target person first.');
       return false;
     }
     setCommandPending('Requesting Follow...');
     setCommandError(null);
     try {
       const res = await api.setEloMode(baseUrl, 'FOLLOW');
-      if (res.success && res.state) {
-        setEloState(res.state);
-        setRobotMode(res.state);
+      if (res.success) {
+        const state = res.state || 'moving';
+        setEloState(state);
+        setRobotMode(state);
         return true;
       } else {
-        setCommandError(res.error || 'Follow command rejected');
+        setCommandError(res.error || 'Follow command rejected by robot');
         return false;
       }
     } catch (err: any) {
-      setCommandError(err.message || 'Failed to start following');
+      setCommandError(err.message || 'Failed to send Follow command to Raspberry Pi');
       return false;
     } finally {
       setCommandPending(null);
@@ -391,16 +392,17 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCommandError(null);
     try {
       const res = await api.setEloMode(baseUrl, 'INTERACT');
-      if (res.success && res.state) {
-        setEloState(res.state);
-        setRobotMode(res.state);
+      if (res.success) {
+        const state = res.state || 'interacting';
+        setEloState(state);
+        setRobotMode(state);
         return true;
       } else {
-        setCommandError(res.error || 'Interact command rejected');
+        setCommandError(res.error || 'Interact command rejected by robot');
         return false;
       }
     } catch (err: any) {
-      setCommandError(err.message || 'Failed to switch to interact');
+      setCommandError(err.message || 'Failed to send Interact command to Raspberry Pi');
       return false;
     } finally {
       setCommandPending(null);
@@ -413,15 +415,16 @@ export const ELOProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const res = await api.emergencyStop(baseUrl);
       if (res.success) {
-        setEloState(res.state || 'stopped');
-        setRobotMode(res.state || 'stopped');
+        const state = res.state || 'stopped';
+        setEloState(state);
+        setRobotMode(state);
         return true;
       } else {
-        setCommandError(res.error || 'Stop command rejected');
+        setCommandError(res.error || 'Stop command rejected by robot');
         return false;
       }
     } catch (err: any) {
-      setCommandError(err.message || 'Failed to stop robot');
+      setCommandError(err.message || 'Failed to send Stop command to Raspberry Pi');
       return false;
     } finally {
       setCommandPending(null);

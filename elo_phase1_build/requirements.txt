@@ -1,0 +1,6 @@
+ai-edge-litert>=1.0.0
+lgpio>=0.2.2.0
+numpy>=1.26
+opencv-python-headless>=4.8
+pyserial>=3.5
+websockets>=14.0

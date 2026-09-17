@@ -6,8 +6,7 @@
  */
 
 const http = require('http');
-
-const PORT = process.env.PORT || 8000;
+const PORT = process.env.PORT || process.argv[2] || 8090;
 
 // In-memory robot state (original)
 let robotState = {
@@ -152,8 +151,8 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
-    // 1. GET /api/health
-    if (method === 'GET' && pathname === '/api/health') {
+    // 1. GET /health or /api/health
+    if (method === 'GET' && (pathname === '/health' || pathname === '/api/health')) {
       return sendJson(res, 200, { status: 'ok', serverTime: new Date().toISOString() });
     }
 
@@ -255,8 +254,8 @@ const server = http.createServer(async (req, res) => {
 
     // ─── Phase C: ELO Core Pi Endpoints ───
 
-    // GET /api/elo/status — Full ELO status
-    if (method === 'GET' && pathname === '/api/elo/status') {
+    // GET /status or /api/elo/status — Full ELO status
+    if (method === 'GET' && (pathname === '/status' || pathname === '/api/elo/status')) {
       return sendJson(res, 200, {
         online: true,
         state: eloCore.state,
@@ -269,13 +268,13 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
-    // GET /api/elo/targets — Available tracked people
-    if (method === 'GET' && pathname === '/api/elo/targets') {
+    // GET /targets or /api/elo/targets — Available tracked people
+    if (method === 'GET' && (pathname === '/targets' || pathname === '/api/elo/targets')) {
       return sendJson(res, 200, { targets: availableTargets });
     }
 
-    // POST /api/elo/target — Parent selects target
-    if (method === 'POST' && pathname === '/api/elo/target') {
+    // POST /target or /api/elo/target — Parent selects target
+    if (method === 'POST' && (pathname === '/target' || pathname === '/api/elo/target')) {
       const body = await parseJsonBody(req);
       const targetId = body.target_id;
       if (!targetId) {
@@ -290,8 +289,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { success: true, target_id: targetId });
     }
 
-    // POST /api/elo/mode — FOLLOW or INTERACT
-    if (method === 'POST' && pathname === '/api/elo/mode') {
+    // POST /mode or /api/elo/mode — FOLLOW or INTERACT
+    if (method === 'POST' && (pathname === '/mode' || pathname === '/api/elo/mode')) {
       const body = await parseJsonBody(req);
       const mode = (body.mode || '').toUpperCase();
 
@@ -319,14 +318,45 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { success: true, state: 'interacting' });
       }
 
-      return sendJson(res, 400, { success: false, error: 'Invalid mode. Must be "FOLLOW" or "INTERACT".' });
+      if (mode === 'STOP') {
+        eloCore.state = 'stopped';
+        console.log(`[ELO Phase C] Mode → STOP`);
+        return sendJson(res, 200, { success: true, state: 'stopped' });
+      }
+
+      return sendJson(res, 400, { success: false, error: 'Invalid mode. Must be "FOLLOW", "INTERACT", or "STOP".' });
     }
 
-    // POST /api/elo/stop — Emergency stop
-    if (method === 'POST' && pathname === '/api/elo/stop') {
+    // POST /stop or /api/elo/stop — Emergency stop
+    if (method === 'POST' && (pathname === '/stop' || pathname === '/api/elo/stop')) {
       eloCore.state = 'stopped';
       console.log(`[ELO Phase C] EMERGENCY STOP`);
       return sendJson(res, 200, { success: true, state: 'stopped' });
+    }
+
+    // GET /audio/status
+    if (method === 'GET' && pathname === '/audio/status') {
+      return sendJson(res, 200, { ready: eloCore.audio_ready, active: false });
+    }
+
+    // POST /audio/start
+    if (method === 'POST' && pathname === '/audio/start') {
+      return sendJson(res, 200, { success: true });
+    }
+
+    // POST /audio/stop
+    if (method === 'POST' && pathname === '/audio/stop') {
+      return sendJson(res, 200, { success: true });
+    }
+
+    // POST /interaction/start
+    if (method === 'POST' && pathname === '/interaction/start') {
+      return sendJson(res, 200, { success: true });
+    }
+
+    // POST /interaction/end
+    if (method === 'POST' && pathname === '/interaction/end') {
+      return sendJson(res, 200, { success: true });
     }
 
     // ─── Phase C: Test helpers ───
@@ -371,14 +401,20 @@ server.listen(PORT, '0.0.0.0', () => {
   🤖 ELO Mock Backend Server Running!
   Local URL:   http://localhost:${PORT}
   Network URL: http://0.0.0.0:${PORT}
-  Contract:    FastAPI-compatible ELO Mobile Endpoints
+  Contract:    Raspberry Pi ELO Core HTTP API (Port 8090 / configurable)
 
-  Phase C Endpoints:
-    GET  /api/elo/status    — Full ELO status
-    GET  /api/elo/targets   — Available tracked people
-    POST /api/elo/target    — Select target
-    POST /api/elo/mode      — FOLLOW / INTERACT
-    POST /api/elo/stop      — Emergency stop
+  Pi Core Endpoints:
+    GET  /health            — Connection & health check
+    GET  /status            — Robot state, target, obstacles, AI & audio
+    GET  /targets           — Vision detected trackable persons
+    POST /target            — Parent selects tracking target
+    POST /mode              — Set mode (FOLLOW, INTERACT, STOP)
+    POST /stop              — Emergency stop
+    GET  /audio/status      — Audio subsystem status
+    POST /audio/start       — Start audio
+    POST /audio/stop        — Stop audio
+    POST /interaction/start — Start interaction
+    POST /interaction/end   — End interaction
 
   Test Helpers:
     POST /api/test/toggle-obstacle

@@ -1,0 +1,92 @@
+[vision]
+model_path = "models/detect.tflite"
+input_width = 300
+input_height = 300
+confidence_high = 0.45
+confidence_low = 0.20
+person_class_id = 0
+inference_hz = 12.0
+camera_width = 640
+camera_height = 480
+camera_fps = 15
+jpeg_preview_hz = 4.0
+
+[focus]
+mode = "single_then_lock"
+initial_wait_s = 1.5
+
+[tracking]
+max_tracks = 12
+track_buffer_frames = 12
+min_hits = 2
+iou_gate = 0.05
+center_gate_px = 110.0
+size_ratio_gate = 2.8
+appearance_gate = 0.55
+appearance_weight = 0.20
+motion_weight = 0.30
+iou_weight = 0.50
+hist_h_bins = 16
+hist_s_bins = 8
+hist_update_alpha = 0.15
+
+[target]
+selected_target_timeout_s = 8.0
+reacquire_max_age_s = 6.0
+search_speed_percent = 24
+search_max_turns = 2
+search_direction_hold_s = 0.5
+search_full_turn_s = 2.2
+selection_requires_stable_track_frames = 3
+
+[following]
+base_speed_percent = 42
+max_forward_percent = 42
+turn_speed_percent = 32
+stop_area_fraction = 0.22
+hold_area_fraction = 0.15
+steering_deadband = 0.055
+steering_gain = 1.10
+max_steering = 0.70
+center_hold_timeout_s = 0.25
+
+[obstacle]
+front_stop_cm = 42.0
+front_caution_cm = 62.0
+side_stop_cm = 24.0
+side_caution_cm = 38.0
+ultrasonic_cycle_ms = 100
+sensor_timeout_ms = 30
+avoid_turn_speed_percent = 30
+avoid_min_turn_s = 0.35
+avoid_max_turn_s = 1.25
+avoid_recheck_s = 0.12
+max_consecutive_avoid_steps = 5
+prefer_target_direction_weight = 0.65
+prefer_clearance_weight = 0.35
+
+[motors]
+stby_gpio = 21
+left_in1 = 17
+left_in2 = 27
+left_pwm = 22
+right_in1 = 23
+right_in2 = 24
+right_pwm = 25
+pwm_hz = 800
+invert_left = true
+invert_right = false
+
+[ultrasonic]
+front_trigger = 5
+front_echo = 6
+left_trigger = 12
+left_echo = 13
+right_trigger = 16
+right_echo = 26
+speed_of_sound_cm_s = 34300.0
+
+[dashboard]
+host = "0.0.0.0"
+port = 8080
+follow_default_on = false

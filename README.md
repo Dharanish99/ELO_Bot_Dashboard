@@ -18,7 +18,21 @@ A React Native & Expo companion dashboard for monitoring, configuring, and inter
 
 - **Frontend**: React Native, Expo, React Navigation, TypeScript
 - **State & Storage**: React Context API, AsyncStorage
-- **Backend (Mock)**: Zero-dependency Node.js HTTP server simulating FastAPI endpoints
+- **Backend (Mock)**: Zero-dependency Node.js HTTP server simulating Raspberry Pi ELO Core HTTP API
+
+## Configuration
+
+The dashboard connects directly to the Raspberry Pi running ELO Core on port 8090.
+
+Create a `.env` file (or copy from `.env.example`):
+```bash
+cp .env.example .env
+```
+And specify your Raspberry Pi's LAN IP address:
+```bash
+EXPO_PUBLIC_ELO_CORE_URL=http://<PI_IP_ADDRESS>:8090
+```
+You can also change the target IP anytime inside the app under the **Settings** tab.
 
 ## Getting Started
 
@@ -28,14 +42,14 @@ A React Native & Expo companion dashboard for monitoring, configuring, and inter
 npm install
 ```
 
-### 2. Start the Mock Server
+### 2. Start the Mock Server (Optional for offline testing)
 
 To run the local mock API server:
 
 ```bash
 npm run mock
 ```
-The mock server runs on port `8000` (`http://localhost:8000` or via your local network IP).
+The mock server runs on port `8090` (`http://localhost:8090` or via your local network IP).
 
 ### 3. Run the App
 
