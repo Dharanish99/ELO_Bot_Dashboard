@@ -1,4 +1,6 @@
 import {
+  AudioStatusResponse,
+  CameraStatus,
   CommandResponse,
   EloStatusResponse,
   EloTarget,
@@ -10,6 +12,7 @@ import {
   SessionCurrentResponse,
   SessionReportDetail,
   SessionReportSummary,
+  TrackingState,
 } from '../types';
 
 const REQUEST_TIMEOUT_MS = 3500;
@@ -48,7 +51,7 @@ export function normalizeBaseUrl(url: string): string {
 export function normalizeRobotMode(rawMode?: string): RobotMode {
   if (!rawMode) return 'stopped';
   const lower = String(rawMode).toLowerCase();
-  if (lower === 'follow' || lower === 'moving') return 'moving';
+  if (lower === 'follow' || lower === 'following' || lower === 'moving') return 'moving';
   if (lower === 'interact' || lower === 'interacting') return 'interacting';
   if (lower === 'stop' || lower === 'stopped') return 'stopped';
   return 'unknown';
@@ -59,32 +62,78 @@ export function normalizeRobotMode(rawMode?: string): RobotMode {
  */
 export function normalizeStatusResponse(data: any): EloStatusResponse {
   const rawState = data?.state ?? data?.mode ?? data?.robot_state ?? data?.current_mode;
+  const rawTargetId =
+    data?.target_id ??
+    (typeof data?.target === 'string' || typeof data?.target === 'number'
+      ? data.target
+      : data?.target?.id);
+  const normalizedTargetId = rawTargetId != null ? String(rawTargetId) : null;
+
   return {
     online: data?.online !== undefined ? !!data.online : true,
     state: normalizeRobotMode(rawState),
-    target_id: data?.target_id ?? (typeof data?.target === 'string' ? data.target : data?.target?.id) ?? null,
+    mode: data?.mode,
+    target_id: normalizedTargetId,
     obstacle: !!(data?.obstacle ?? data?.obstacle_detected),
+    safety_locked: !!(data?.safety_locked),
     obstacle_detail: data?.obstacle_detail || (data?.obstacle ? 'Obstacle detected' : undefined),
     ai_connected: data?.ai_connected ?? (data?.ai_status === 'connected' || data?.ai_status === true || false),
     audio_ready: data?.audio_ready ?? (data?.audio_status === 'ready' || data?.audio_status === true || false),
-    last_updated: data?.last_updated || data?.timestamp || new Date().toISOString(),
+    audio_status: data?.audio_status,
+    display_connected: data?.display_connected !== undefined ? !!data.display_connected : undefined,
+    last_updated: data?.last_updated || data?.server_time || data?.timestamp || new Date().toISOString(),
+    last_error: data?.last_error ?? null,
   };
 }
 
 /**
+ * Normalizes a single tracking state string from the Pi.
+ */
+function normalizeTrackingState(raw?: string): TrackingState {
+  if (!raw) return 'tracked';
+  const lower = raw.toLowerCase();
+  if (lower === 'reacquiring' || lower === 're_acquiring') return 'reacquiring';
+  if (lower === 'lost') return 'lost';
+  return 'tracked';
+}
+
+/**
  * Normalizes targets from Raspberry Pi ELO Core GET /targets.
+ * Preserves bbox and tracking_state when present.
  */
 export function normalizeTargets(data: any): EloTarget[] {
-  const rawList = Array.isArray(data) ? data : (Array.isArray(data?.targets) ? data.targets : []);
+  const rawList = Array.isArray(data)
+    ? data
+    : Array.isArray(data?.targets)
+    ? data.targets
+    : [];
+
   return rawList.map((t: any, index: number) => {
     const id = String(t.id ?? t.target_id ?? index + 1);
-    const label = t.label ?? t.name ?? `Person ${id}`;
-    return {
+    const label = t.label ?? t.name ?? `Person ${index + 1}`;
+
+    const target: EloTarget = {
       id,
       label,
       confidence: typeof t.confidence === 'number' ? t.confidence : undefined,
       distance: typeof t.distance === 'number' ? t.distance : undefined,
+      tracking_state: normalizeTrackingState(t.tracking_state),
     };
+
+    // Preserve normalized bbox if present and valid
+    if (t.bbox && typeof t.bbox === 'object') {
+      const { x, y, width, height } = t.bbox;
+      if (
+        typeof x === 'number' &&
+        typeof y === 'number' &&
+        typeof width === 'number' &&
+        typeof height === 'number'
+      ) {
+        target.bbox = { x, y, width, height };
+      }
+    }
+
+    return target;
   });
 }
 
@@ -274,15 +323,28 @@ export const api = {
 
   /**
    * List of detected/trackable targets from Pi vision system (GET /targets)
+   * Returns full EloTargetsResponse including bbox geometry.
    */
-  async getTargets(baseUrl: string): Promise<EloTarget[]> {
+  async getTargetsRaw(baseUrl: string): Promise<{ targets: EloTarget[]; frame_width?: number; frame_height?: number }> {
     const root = normalizeBaseUrl(baseUrl);
     const res = await requestWithTimeout(`${root}/targets`, { method: 'GET' }, 2500);
     if (!res.ok) {
       throw new ApiError(`Failed to fetch targets (${res.status})`, res.status);
     }
     const data = await res.json();
-    return normalizeTargets(data);
+    return {
+      targets: normalizeTargets(data),
+      frame_width: data?.frame_width,
+      frame_height: data?.frame_height,
+    };
+  },
+
+  /**
+   * Legacy targets fetch — returns normalized target list only.
+   */
+  async getTargets(baseUrl: string): Promise<EloTarget[]> {
+    const { targets } = await this.getTargetsRaw(baseUrl);
+    return targets;
   },
 
   /**
@@ -290,18 +352,24 @@ export const api = {
    */
   async selectTarget(baseUrl: string, targetId: string): Promise<CommandResponse> {
     const root = normalizeBaseUrl(baseUrl);
+    const normalizedId = String(targetId);
     const res = await requestWithTimeout(`${root}/target`, {
       method: 'POST',
-      body: JSON.stringify({ target_id: targetId }),
+      body: JSON.stringify({ target_id: normalizedId }),
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new ApiError(errData.error || errData.detail || `Target selection failed (${res.status})`, res.status);
+      const errMsg =
+        typeof errData.error === 'string'
+          ? errData.error
+          : errData?.error?.message || errData.detail || `Target selection failed (${res.status})`;
+      throw new ApiError(errMsg, res.status);
     }
     const data = await res.json().catch(() => ({ success: true }));
+    const confirmedId = data.target_id != null ? String(data.target_id) : normalizedId;
     return {
       success: data.success !== false,
-      target_id: data.target_id || targetId,
+      target_id: confirmedId,
       ...data,
     };
   },
@@ -318,7 +386,11 @@ export const api = {
     });
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
-      throw new ApiError(errData.error || errData.detail || `Mode command failed (${res.status})`, res.status);
+      const errMsg =
+        typeof errData.error === 'string'
+          ? errData.error
+          : errData?.error?.message || errData.detail || `Mode command failed (${res.status})`;
+      throw new ApiError(errMsg, res.status);
     }
     const data = await res.json().catch(() => ({ success: true }));
     const normalizedState = data.state
@@ -355,7 +427,7 @@ export const api = {
   /**
    * Audio subsystem status on Pi Core (GET /audio/status)
    */
-  async getAudioStatus(baseUrl: string): Promise<{ ready: boolean; active?: boolean }> {
+  async getAudioStatus(baseUrl: string): Promise<AudioStatusResponse> {
     const root = normalizeBaseUrl(baseUrl);
     const res = await requestWithTimeout(`${root}/audio/status`, { method: 'GET' }, 2000);
     if (!res.ok) {
@@ -369,10 +441,12 @@ export const api = {
    */
   async startAudio(baseUrl: string): Promise<CommandResponse> {
     const root = normalizeBaseUrl(baseUrl);
+    console.log('[ELO-VOICE] POST /audio/start');
     const res = await requestWithTimeout(`${root}/audio/start`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    console.log(`[ELO-VOICE] POST /audio/start -> status=${res.status}`);
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new ApiError(errData.error || `Audio start failed (${res.status})`, res.status);
@@ -385,10 +459,12 @@ export const api = {
    */
   async stopAudio(baseUrl: string): Promise<CommandResponse> {
     const root = normalizeBaseUrl(baseUrl);
+    console.log('[ELO-VOICE] POST /audio/stop');
     const res = await requestWithTimeout(`${root}/audio/stop`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    console.log(`[ELO-VOICE] POST /audio/stop -> status=${res.status}`);
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new ApiError(errData.error || `Audio stop failed (${res.status})`, res.status);
@@ -401,10 +477,12 @@ export const api = {
    */
   async startInteraction(baseUrl: string): Promise<CommandResponse> {
     const root = normalizeBaseUrl(baseUrl);
+    console.log('[ELO-VOICE] POST /interaction/start');
     const res = await requestWithTimeout(`${root}/interaction/start`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    console.log(`[ELO-VOICE] POST /interaction/start -> status=${res.status}`);
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new ApiError(errData.error || `Interaction start failed (${res.status})`, res.status);
@@ -417,14 +495,70 @@ export const api = {
    */
   async endInteraction(baseUrl: string): Promise<CommandResponse> {
     const root = normalizeBaseUrl(baseUrl);
+    console.log('[ELO-VOICE] POST /interaction/end');
     const res = await requestWithTimeout(`${root}/interaction/end`, {
       method: 'POST',
       body: JSON.stringify({}),
     });
+    console.log(`[ELO-VOICE] POST /interaction/end -> status=${res.status}`);
     if (!res.ok) {
       const errData = await res.json().catch(() => ({}));
       throw new ApiError(errData.error || `Interaction end failed (${res.status})`, res.status);
     }
     return res.json().catch(() => ({ success: true }));
+  },
+
+  // ─── Camera Endpoints ───
+
+  /**
+   * Camera system status from Pi Core (GET /camera/status)
+   */
+  async getCameraStatus(baseUrl: string): Promise<CameraStatus> {
+    const root = normalizeBaseUrl(baseUrl);
+    const res = await requestWithTimeout(`${root}/camera/status`, { method: 'GET' }, 2000);
+    if (!res.ok) {
+      throw new ApiError(`Camera status check failed (${res.status})`, res.status);
+    }
+    const data = await res.json();
+    return {
+      available: data.available ?? false,
+      streaming: data.streaming ?? false,
+      width: typeof data.width === 'number' ? data.width : 640,
+      height: typeof data.height === 'number' ? data.height : 480,
+      fps: typeof data.fps === 'number' ? data.fps : 10,
+      format: data.format ?? 'mjpeg',
+      local_only: data.local_only ?? true,
+    };
+  },
+
+  /**
+   * Constructs the MJPEG stream URL for the camera (GET /camera/stream)
+   * Note: Not supported on React Native native image view. Use /camera/frame.
+   */
+  getCameraStreamUrl(baseUrl: string): string {
+    return `${normalizeBaseUrl(baseUrl)}/camera/stream`;
+  },
+
+  /**
+   * Constructs a URL for a single JPEG frame with cache-busting (GET /camera/frame)
+   * Canonical native mobile transport.
+   */
+  getCameraFrameUrl(baseUrl: string): string {
+    return `${normalizeBaseUrl(baseUrl)}/camera/frame?ts=${Date.now()}`;
+  },
+
+  /**
+   * Checks if camera stream is reachable (lightweight HEAD request)
+   */
+  async checkCameraStream(baseUrl: string): Promise<boolean> {
+    const root = normalizeBaseUrl(baseUrl);
+    try {
+      const res = await requestWithTimeout(`${root}/camera/status`, { method: 'GET' }, 2000);
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => ({ available: false }));
+      return data.available === true;
+    } catch {
+      return false;
+    }
   },
 };

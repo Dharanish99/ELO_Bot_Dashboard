@@ -2,10 +2,10 @@ import React from 'react';
 import { StyleSheet, Platform } from 'react-native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
-import { HomeScreen } from '../screens/HomeScreen';
+import { HomeStackNavigator } from './HomeStackNavigator';
 import { ReportsStackNavigator } from './ReportsStackNavigator';
-import { RestrictionsScreen } from '../screens/RestrictionsScreen';
-import { SettingsScreen } from '../screens/SettingsScreen';
+import { SettingsStackNavigator } from './SettingsStackNavigator';
+import { LimitsScreen } from '../screens/LimitsScreen';
 import { RootTabParamList } from '../types';
 import { colors } from '../theme';
 
@@ -28,7 +28,7 @@ export const RootNavigator: React.FC = () => {
             iconName = focused ? 'radio-button-on' : 'radio-button-off';
           } else if (route.name === 'Reports') {
             iconName = focused ? 'document-text' : 'document-text-outline';
-          } else if (route.name === 'Restrictions') {
+          } else if (route.name === 'Limits') {
             iconName = focused ? 'time' : 'time-outline';
           } else if (route.name === 'Settings') {
             iconName = focused ? 'settings' : 'settings-outline';
@@ -40,8 +40,8 @@ export const RootNavigator: React.FC = () => {
     >
       <Tab.Screen
         name="Home"
-        component={HomeScreen}
-        options={{ tabBarLabel: 'Control' }}
+        component={HomeStackNavigator}
+        options={{ tabBarLabel: 'Home' }}
       />
       <Tab.Screen
         name="Reports"
@@ -49,13 +49,13 @@ export const RootNavigator: React.FC = () => {
         options={{ tabBarLabel: 'Reports' }}
       />
       <Tab.Screen
-        name="Restrictions"
-        component={RestrictionsScreen}
+        name="Limits"
+        component={LimitsScreen}
         options={{ tabBarLabel: 'Limits' }}
       />
       <Tab.Screen
         name="Settings"
-        component={SettingsScreen}
+        component={SettingsStackNavigator}
         options={{ tabBarLabel: 'Settings' }}
       />
     </Tab.Navigator>
@@ -75,8 +75,8 @@ const styles = StyleSheet.create({
   },
   tabBarLabel: {
     fontSize: 10,
-    fontWeight: '500',
-    letterSpacing: 0.3,
+    fontWeight: '600',
+    letterSpacing: 0.5,
     marginTop: 2,
   },
 });

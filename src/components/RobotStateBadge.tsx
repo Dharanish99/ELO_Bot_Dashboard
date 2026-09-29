@@ -1,6 +1,5 @@
 import React, { useRef, useEffect } from 'react';
-import { View, Text, StyleSheet, Animated } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
+import { View, Text, StyleSheet, Animated, Easing } from 'react-native';
 import { colors, spacing } from '../theme';
 import { RobotMode } from '../types';
 
@@ -9,6 +8,7 @@ interface RobotStateBadgeProps {
   updatedAt: string | null;
   isConnected: boolean;
   targetLabel?: string | null;
+  targetDistance?: number | null;
   commandPending?: string | null;
 }
 
@@ -17,88 +17,78 @@ export const RobotStateBadge: React.FC<RobotStateBadgeProps> = ({
   updatedAt,
   isConnected,
   targetLabel,
+  targetDistance,
   commandPending,
 }) => {
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(12)).current;
-  const scaleAnim = useRef(new Animated.Value(0.95)).current;
+  const slideAnim = useRef(new Animated.Value(8)).current;
+  const scaleAnim = useRef(new Animated.Value(0.96)).current;
+  const prevMode = useRef(mode);
 
   useEffect(() => {
     Animated.parallel([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 500,
-        useNativeDriver: true,
-      }),
-      Animated.timing(slideAnim, {
-        toValue: 0,
-        duration: 500,
-        useNativeDriver: true,
-      }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
   }, []);
 
-  // Micro-bounce on mode change
+  // Smooth cross-fade on mode change
   useEffect(() => {
-    scaleAnim.setValue(0.92);
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      friction: 6,
-      tension: 120,
-      useNativeDriver: true,
-    }).start();
+    if (prevMode.current === mode) return;
+    prevMode.current = mode;
+
+    Animated.sequence([
+      Animated.timing(fadeAnim, { toValue: 0.5, duration: 100, useNativeDriver: true }),
+      Animated.spring(scaleAnim, { toValue: 0.95, friction: 10, tension: 200, useNativeDriver: true }),
+      Animated.parallel([
+        Animated.timing(fadeAnim, { toValue: 1, duration: 250, useNativeDriver: true }),
+        Animated.spring(scaleAnim, { toValue: 1, friction: 6, tension: 150, useNativeDriver: true }),
+      ]),
+    ]).start();
   }, [mode]);
 
   const formatTime = (isoString: string | null) => {
     if (!isoString) return '';
     try {
-      const date = new Date(isoString);
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    } catch {
-      return '';
-    }
+      return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch { return ''; }
   };
 
-  const timeStr = formatTime(updatedAt);
-
-  // Configure appearance per RobotMode
-  const getStateConfig = (currentMode: RobotMode) => {
-    switch (currentMode) {
+  const getStateConfig = (m: RobotMode) => {
+    switch (m) {
       case 'moving':
         return {
-          title: 'Moving',
-          icon: 'footsteps-outline' as const,
-          description: targetLabel
-            ? `Following: ${targetLabel}`
-            : 'Following child around the room',
-          color: colors.stateMoving || colors.textPrimary,
+          verb: 'FOLLOWING',
+          color: colors.wheelAmber,
+          dotColor: colors.wheelAmber,
+          subColor: colors.textSecondary,
         };
       case 'interacting':
         return {
-          title: 'Interacting',
-          icon: 'chatbubble-ellipses-outline' as const,
-          description: 'Teaching, listening & checking in',
-          color: colors.stateInteracting || colors.textPrimary,
+          verb: 'INTERACTING',
+          color: colors.eyeCyan,
+          dotColor: colors.eyeCyan,
+          subColor: colors.textSecondary,
         };
       case 'stopped':
         return {
-          title: 'Stopped',
-          icon: 'pause-circle-outline' as const,
-          description: 'Motors stopped • Stationary & safe',
-          color: colors.stateStopped || colors.textMuted,
+          verb: 'STOPPED',
+          color: colors.textMuted,
+          dotColor: colors.dotOffline,
+          subColor: colors.textMuted,
         };
-      case 'unknown':
       default:
         return {
-          title: 'Standby',
-          icon: 'help-circle-outline' as const,
-          description: 'Syncing robot telemetry...',
-          color: colors.stateUnknown || colors.textMuted,
+          verb: 'STANDBY',
+          color: colors.textMuted,
+          dotColor: colors.textMuted,
+          subColor: colors.textMuted,
         };
     }
   };
 
   const config = getStateConfig(mode);
+  const timeStr = formatTime(updatedAt);
 
   return (
     <Animated.View
@@ -106,70 +96,101 @@ export const RobotStateBadge: React.FC<RobotStateBadgeProps> = ({
         styles.container,
         {
           opacity: fadeAnim,
-          transform: [
-            { translateY: slideAnim },
-            { scale: scaleAnim },
-          ],
+          transform: [{ translateY: slideAnim }, { scale: scaleAnim }],
         },
       ]}
     >
-      {/* Context: tiny timestamp or transitional message */}
-      <Text style={styles.timestamp}>
-        {commandPending ? commandPending.toUpperCase() : timeStr ? `SYNCED AT ${timeStr}` : 'CURRENT STATE'}
+      {/* Context label */}
+      <Text style={styles.contextLabel}>
+        {commandPending
+          ? commandPending.toUpperCase()
+          : timeStr
+          ? `SYNCED ${timeStr}`
+          : 'CURRENT STATE'}
       </Text>
 
-      {/* Primary: Mode name with icon */}
-      <View style={styles.modeRow}>
-        <Ionicons
-          name={config.icon}
-          size={32}
-          color={config.color}
-          style={styles.modeIcon}
-        />
-        <Text style={[styles.modeTitle, { color: config.color }]}>
-          {config.title}
+      {/* State line */}
+      <View style={styles.stateRow}>
+        <View style={[styles.stateDot, { backgroundColor: config.dotColor }]} />
+        <Text style={[styles.stateText, { color: config.color }]}>
+          {config.verb}
         </Text>
       </View>
 
-      {/* Secondary: description line */}
-      <Text style={styles.modeDescription}>
-        {config.description}
-      </Text>
+      {/* Target / description */}
+      {mode === 'moving' && targetLabel ? (
+        <View style={styles.targetRow}>
+          <Text style={styles.targetName}>{targetLabel}</Text>
+          {targetDistance != null && (
+            <Text style={styles.targetDistance}>{targetDistance.toFixed(1)}m away</Text>
+          )}
+        </View>
+      ) : mode === 'interacting' ? (
+        <Text style={[styles.subText, { color: config.subColor }]}>
+          Conversation · Learning · Companionship
+        </Text>
+      ) : mode === 'stopped' ? (
+        <Text style={[styles.subText, { color: config.subColor }]}>
+          Motors disengaged · Ready for command
+        </Text>
+      ) : (
+        <Text style={[styles.subText, { color: config.subColor }]}>
+          Syncing telemetry…
+        </Text>
+      )}
     </Animated.View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    alignItems: 'center',
-    paddingVertical: spacing.xl,
     paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
   },
-  timestamp: {
-    fontSize: 11,
+  contextLabel: {
+    fontSize: 10,
+    fontWeight: '700',
     color: colors.textMuted,
-    letterSpacing: 1.5,
-    marginBottom: spacing.md,
-    fontWeight: '600',
+    letterSpacing: 2,
+    marginBottom: spacing.xs + 2,
   },
-  modeRow: {
+  stateRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.xs,
+    gap: spacing.sm,
   },
-  modeIcon: {
-    marginRight: spacing.md,
+  stateDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
-  modeTitle: {
-    fontSize: 34,
+  stateText: {
+    fontSize: 30,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: 1,
   },
-  modeDescription: {
-    fontSize: 14,
-    color: colors.textSecondary,
-    fontWeight: '400',
+  targetRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginTop: spacing.xs,
+    gap: spacing.sm,
+  },
+  targetName: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: colors.textPrimary,
     letterSpacing: 0.2,
-    textAlign: 'center',
+  },
+  targetDistance: {
+    fontSize: 13,
+    color: colors.textMuted,
+    fontWeight: '400',
+  },
+  subText: {
+    fontSize: 13,
+    fontWeight: '400',
+    marginTop: spacing.xs,
+    letterSpacing: 0.2,
   },
 });

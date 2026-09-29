@@ -6,55 +6,83 @@ interface SubsystemStatusBarProps {
   aiConnected: boolean;
   audioReady: boolean;
   isConnected: boolean;
+  displayConnected?: boolean;
+  cameraReady?: boolean;
 }
+
+interface SubsystemDotProps {
+  active: boolean;
+  label: string;
+  value: string;
+}
+
+const SubsystemDot: React.FC<SubsystemDotProps> = ({ active, label, value }) => (
+  <View style={styles.subsystemItem} accessibilityLabel={`${label} ${value}`}>
+    <View
+      style={[
+        styles.dot,
+        { backgroundColor: active ? colors.dotOnline : colors.dotOffline },
+      ]}
+    />
+    <Text style={styles.subsystemLabel}>{label}</Text>
+    <Text
+      style={[
+        styles.subsystemValue,
+        { color: active ? colors.textPrimary : colors.textMuted },
+      ]}
+    >
+      {value}
+    </Text>
+  </View>
+);
 
 export const SubsystemStatusBar: React.FC<SubsystemStatusBarProps> = ({
   aiConnected,
   audioReady,
   isConnected,
+  displayConnected,
+  cameraReady,
 }) => {
   const effectiveAi = isConnected && aiConnected;
   const effectiveAudio = isConnected && audioReady;
+  const effectiveDisplay = isConnected && (displayConnected ?? false);
+  const effectiveCamera = isConnected && (cameraReady ?? false);
+
+  // Show 4 subsystems if display/camera data is available, else 2
+  const showExtended = displayConnected !== undefined || cameraReady !== undefined;
 
   return (
     <View style={styles.container}>
-      <View style={styles.subsystemItem}>
-        <View
-          style={[
-            styles.dot,
-            { backgroundColor: effectiveAi ? colors.dotOnline : colors.dotOffline },
-          ]}
-        />
-        <Text style={styles.subsystemLabel}>AI Engine:</Text>
-        <Text
-          style={[
-            styles.subsystemValue,
-            { color: effectiveAi ? colors.textPrimary : colors.textMuted },
-          ]}
-        >
-          {effectiveAi ? 'Connected' : 'Offline'}
-        </Text>
-      </View>
+      <SubsystemDot
+        active={effectiveAi}
+        label="AI"
+        value={effectiveAi ? 'Connected' : 'Offline'}
+      />
 
       <View style={styles.divider} />
 
-      <View style={styles.subsystemItem}>
-        <View
-          style={[
-            styles.dot,
-            { backgroundColor: effectiveAudio ? colors.dotOnline : colors.dotOffline },
-          ]}
-        />
-        <Text style={styles.subsystemLabel}>Audio:</Text>
-        <Text
-          style={[
-            styles.subsystemValue,
-            { color: effectiveAudio ? colors.textPrimary : colors.textMuted },
-          ]}
-        >
-          {effectiveAudio ? 'Ready' : 'Offline'}
-        </Text>
-      </View>
+      <SubsystemDot
+        active={effectiveAudio}
+        label="Audio"
+        value={effectiveAudio ? 'Ready' : 'Offline'}
+      />
+
+      {showExtended && (
+        <>
+          <View style={styles.divider} />
+          <SubsystemDot
+            active={effectiveCamera}
+            label="Camera"
+            value={effectiveCamera ? 'Ready' : 'Offline'}
+          />
+          <View style={styles.divider} />
+          <SubsystemDot
+            active={effectiveDisplay}
+            label="Display"
+            value={effectiveDisplay ? 'On' : 'Offline'}
+          />
+        </>
+      )}
     </View>
   );
 };

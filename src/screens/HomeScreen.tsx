@@ -7,39 +7,46 @@ import {
   RefreshControl,
   TouchableOpacity,
   Animated,
+  Easing,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
 
-// Components
+// Existing components
 import { EloIdentityHeader } from '../components/EloIdentityHeader';
 import { ConnectionBanner } from '../components/ConnectionBanner';
 import { RobotStateBadge } from '../components/RobotStateBadge';
-import { TargetSelector } from '../components/TargetSelector';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
 import { CommandButtons } from '../components/CommandButtons';
 import { SessionTimeIndicator } from '../components/SessionTimeIndicator';
 import { PrivacyCard } from '../components/PrivacyCard';
 import { SubsystemStatusBar } from '../components/SubsystemStatusBar';
+
+// Phase D: camera
+import { LiveCameraSelector } from '../components/camera/LiveCameraSelector';
+
+// Phase D: ELO robot hero
+import { EloRobotHero } from '../components/EloRobotHero';
+
 import { RootTabParamList } from '../types';
 
 type HomeScreenNavProp = BottomTabNavigationProp<RootTabParamList, 'Home'>;
 
 export const HomeScreen: React.FC = () => {
   const navigation = useNavigation<HomeScreenNavProp>();
+  const isFocused = useIsFocused();
+
   const {
-    // Legacy / general state
+    baseUrl,
     robotMode,
     modeUpdatedAt,
     isConnected,
     isUnreachable,
     retryConnection,
-
-    // Phase C states & commands
     eloOnline,
     eloState,
     selectedTargetId,
@@ -48,31 +55,46 @@ export const HomeScreen: React.FC = () => {
     obstacleDetail,
     aiConnected,
     audioReady,
+    displayConnected,
     commandPending,
     commandError,
     clearCommandError,
-    selectTarget,
     requestFollow,
     requestInteract,
     requestStop,
+    stagedTargetId,
+    stageTarget,
+    clearStagedTarget,
+    lockedTargetId,
+    targetLockState,
+    lockTarget,
+    clearTargetLock,
+    setCameraActive,
   } = useELO();
 
   const [refreshing, setRefreshing] = useState(false);
 
-  // Entrance animations for sections
-  const animHeader = useRef(new Animated.Value(0)).current;
-  const animHero = useRef(new Animated.Value(0)).current;
-  const animControls = useRef(new Animated.Value(0)).current;
-  const animSecondary = useRef(new Animated.Value(0)).current;
+  // Staggered entrance animations
+  const anims = Array.from({ length: 7 }, () => useRef(new Animated.Value(0)).current);
+  const [a0, a1, a2, a3, a4, a5, a6] = anims;
 
   useEffect(() => {
-    Animated.stagger(100, [
-      Animated.timing(animHeader, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animHero, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animControls, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animSecondary, { toValue: 1, duration: 400, useNativeDriver: true }),
-    ]).start();
+    Animated.stagger(
+      70,
+      anims.map((a) =>
+        Animated.timing(a, {
+          toValue: 1,
+          duration: 400,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        })
+      )
+    ).start();
   }, []);
+
+  useEffect(() => {
+    setCameraActive(isFocused);
+  }, [isFocused, setCameraActive]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -87,17 +109,27 @@ export const HomeScreen: React.FC = () => {
     navigation.navigate('Settings');
   };
 
-  // Find label of confirmed selected target
-  const confirmedTarget = targets.find((t) => t.id === selectedTargetId);
-  const targetLabel = confirmedTarget ? confirmedTarget.label : selectedTargetId ? `Target #${selectedTargetId}` : null;
+  const currentState = eloOnline ? eloState : robotMode;
+  const lockedTarget = targets.find((t) => t.id === lockedTargetId);
+  const targetLabel = lockedTarget?.label ?? null;
+  const targetDistance = lockedTarget?.distance ?? null;
 
-  // Effective robot state (prefer Phase C eloState, fallback to robotMode)
-  const currentEffectiveState = eloOnline ? eloState : robotMode;
+  const fadeSlide = (anim: Animated.Value, delay = 0) => ({
+    opacity: anim,
+    transform: [
+      {
+        translateY: anim.interpolate({
+          inputRange: [0, 1],
+          outputRange: [16, 0],
+        }),
+      },
+    ],
+  });
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* 1. Identity Header */}
-      <Animated.View style={{ opacity: animHeader }}>
+      {/* ── Header ── */}
+      <Animated.View style={fadeSlide(a0)}>
         <EloIdentityHeader
           isOnline={isConnected && eloOnline}
           lastUpdated={modeUpdatedAt}
@@ -115,72 +147,103 @@ export const HomeScreen: React.FC = () => {
         }
         showsVerticalScrollIndicator={false}
       >
-        {/* Connection banner if offline */}
-        <ConnectionBanner onPressSettings={handleOpenSettings} />
+        {/* Connection banner */}
+        <Animated.View style={fadeSlide(a1)}>
+          <ConnectionBanner onPressSettings={handleOpenSettings} />
+        </Animated.View>
 
-        {/* Command Error Alert (if any rejected command) */}
+        {/* Command error */}
         {commandError ? (
-          <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle-outline" size={18} color={colors.accent} style={{ marginRight: spacing.sm }} />
-            <Text style={styles.errorBannerText}>{commandError}</Text>
-            <TouchableOpacity onPress={clearCommandError} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-              <Ionicons name="close" size={18} color={colors.textSecondary} />
+          <View style={styles.errorBanner} accessibilityLiveRegion="assertive">
+            <Ionicons name="alert-circle-outline" size={16} color={colors.accent} style={{ marginRight: spacing.xs + 2 }} />
+            <Text style={styles.errorText}>{commandError}</Text>
+            <TouchableOpacity
+              onPress={clearCommandError}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Dismiss error"
+              accessibilityRole="button"
+            >
+              <Ionicons name="close" size={16} color={colors.textMuted} />
             </TouchableOpacity>
           </View>
         ) : null}
 
-        {/* 2. Hero: Robot State Badge */}
-        <Animated.View style={{ opacity: animHero }}>
-          <RobotStateBadge
-            mode={currentEffectiveState}
-            updatedAt={modeUpdatedAt}
+        {/* ── ELO Robot Hero (centrepiece) ── */}
+        <Animated.View style={[styles.heroSection, fadeSlide(a1)]}>
+          <EloRobotHero
+            mode={currentState}
             isConnected={isConnected}
-            targetLabel={targetLabel}
+            obstacleDetected={obstacleDetected}
             commandPending={commandPending}
           />
         </Animated.View>
 
-        {/* 3. Subsystem Status Bar (AI & Audio) */}
-        <Animated.View style={{ opacity: animHero }}>
+        {/* ── State badge ── */}
+        <Animated.View style={fadeSlide(a2)}>
+          <RobotStateBadge
+            mode={currentState}
+            updatedAt={modeUpdatedAt}
+            isConnected={isConnected}
+            targetLabel={targetLabel}
+            targetDistance={targetDistance}
+            commandPending={commandPending}
+          />
+        </Animated.View>
+
+        {/* Divider */}
+        <View style={styles.divider} />
+
+        {/* ── Subsystem bar ── */}
+        <Animated.View style={fadeSlide(a3)}>
           <SubsystemStatusBar
             aiConnected={aiConnected}
             audioReady={audioReady}
             isConnected={isConnected}
+            displayConnected={displayConnected}
           />
         </Animated.View>
 
-        {/* 4. Controls Section: Target Selector, Safety Card, Command Buttons */}
-        <Animated.View style={{ opacity: animControls }}>
-          {/* Target Selector */}
-          <TargetSelector
+        {/* ── Live Camera + Target Selector ── */}
+        <Animated.View style={fadeSlide(a3)}>
+          <LiveCameraSelector
+            baseUrl={baseUrl}
             targets={targets}
-            selectedTargetId={selectedTargetId}
-            commandPending={commandPending}
+            stagedTargetId={stagedTargetId}
+            lockedTargetId={lockedTargetId}
+            targetLockState={targetLockState}
             isConnected={isConnected}
-            onSelectTarget={selectTarget}
+            isActive={isFocused}
+            onStageTarget={stageTarget}
+            onLockTarget={lockTarget}
+            onClearSelection={clearTargetLock}
           />
+        </Animated.View>
 
-          {/* Safety & Obstacle Card */}
+        {/* ── Safety Card ── */}
+        <Animated.View style={fadeSlide(a4)}>
           <SafetyStatusCard
             obstacleDetected={obstacleDetected}
             obstacleDetail={obstacleDetail}
-            robotState={currentEffectiveState}
+            robotState={currentState}
           />
+        </Animated.View>
 
-          {/* Primary Command Buttons: FOLLOW, INTERACT, STOP */}
+        {/* ── Command Buttons ── */}
+        <Animated.View style={fadeSlide(a5)}>
           <CommandButtons
-            currentMode={currentEffectiveState}
+            currentMode={currentState}
             commandPending={commandPending}
             isConnected={isConnected}
-            selectedTargetId={selectedTargetId}
+            targetLockState={targetLockState}
+            lockedTargetId={lockedTargetId}
             onRequestFollow={requestFollow}
             onRequestInteract={requestInteract}
             onRequestStop={requestStop}
           />
         </Animated.View>
 
-        {/* 5. Secondary Information & Controls */}
-        <Animated.View style={{ opacity: animSecondary }}>
+        {/* ── Secondary ── */}
+        <Animated.View style={fadeSlide(a6)}>
           <SessionTimeIndicator />
           <PrivacyCard />
         </Animated.View>
@@ -197,19 +260,30 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingBottom: spacing.xxxl,
   },
+  heroSection: {
+    alignItems: 'center',
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.sm,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: colors.border,
+    marginHorizontal: spacing.lg,
+    marginVertical: spacing.md,
+  },
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.accentMuted,
     borderRadius: radius.md,
     marginHorizontal: spacing.lg,
-    marginTop: spacing.md,
+    marginTop: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm + 2,
     borderWidth: 1,
-    borderColor: 'rgba(255, 59, 48, 0.3)',
+    borderColor: 'rgba(255, 59, 48, 0.25)',
   },
-  errorBannerText: {
+  errorText: {
     flex: 1,
     fontSize: 13,
     color: colors.accent,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -13,7 +13,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
-import { DEFAULT_ELO_CORE_URL } from '../api/client';
+import { DEFAULT_ELO_CORE_URL, api } from '../api/client';
+import { CameraStatus } from '../types';
 
 const QUICK_IPS = [
   { label: 'Pi (Default)', url: DEFAULT_ELO_CORE_URL },
@@ -21,8 +22,49 @@ const QUICK_IPS = [
   { label: 'raspberrypi.local', url: 'http://raspberrypi.local:8090' },
 ];
 
+interface DiagnosticRowProps {
+  label: string;
+  value: string;
+  active?: boolean;
+  isLoading?: boolean;
+}
+
+const DiagnosticRow: React.FC<DiagnosticRowProps> = ({ label, value, active, isLoading }) => (
+  <View style={diagStyles.row} accessibilityLabel={`${label}: ${value}`}>
+    <Text style={diagStyles.label}>{label}</Text>
+    <View style={diagStyles.valueGroup}>
+      {isLoading ? (
+        <ActivityIndicator size="small" color={colors.textMuted} />
+      ) : active !== undefined ? (
+        <>
+          <View
+            style={[
+              diagStyles.dot,
+              { backgroundColor: active ? colors.dotOnline : colors.dotOffline },
+            ]}
+          />
+          <Text style={[diagStyles.value, { color: active ? colors.textPrimary : colors.textMuted }]}>
+            {value}
+          </Text>
+        </>
+      ) : (
+        <Text style={diagStyles.valueNeutral}>{value}</Text>
+      )}
+    </View>
+  </View>
+);
+
 export const SettingsScreen: React.FC = () => {
-  const { baseUrl, setBaseUrl, testConnectionUrl } = useELO();
+  const {
+    baseUrl,
+    setBaseUrl,
+    testConnectionUrl,
+    isConnected,
+    aiConnected,
+    audioReady,
+    displayConnected,
+    eloOnline,
+  } = useELO();
 
   const [inputUrl, setInputUrl] = useState<string>(baseUrl);
   const [isTesting, setIsTesting] = useState<boolean>(false);
@@ -33,6 +75,8 @@ export const SettingsScreen: React.FC = () => {
   } | null>(null);
   const [saved, setSaved] = useState<boolean>(false);
   const [showGuide, setShowGuide] = useState<boolean>(false);
+  const [cameraStatus, setCameraStatus] = useState<CameraStatus | null>(null);
+  const [isFetchingCamera, setIsFetchingCamera] = useState(false);
 
   const handleTest = async () => {
     Keyboard.dismiss();
@@ -54,6 +98,19 @@ export const SettingsScreen: React.FC = () => {
     handleTest();
   };
 
+  const fetchCameraStatus = useCallback(async () => {
+    if (isFetchingCamera) return;
+    setIsFetchingCamera(true);
+    try {
+      const status = await api.getCameraStatus(baseUrl);
+      setCameraStatus(status);
+    } catch {
+      setCameraStatus(null);
+    } finally {
+      setIsFetchingCamera(false);
+    }
+  }, [baseUrl, isFetchingCamera]);
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
       <View style={styles.header}>
@@ -66,10 +123,14 @@ export const SettingsScreen: React.FC = () => {
         showsVerticalScrollIndicator={false}
       >
         {saved && (
-          <Text style={styles.savedText}>URL saved</Text>
+          <Text style={styles.savedText} accessibilityLiveRegion="polite">
+            URL saved
+          </Text>
         )}
 
-        {/* URL input */}
+        {/* Section: Pi Connection */}
+        <Text style={styles.sectionTitle}>PI CONNECTION</Text>
+
         <View style={styles.inputRow}>
           <TextInput
             style={styles.input}
@@ -80,9 +141,14 @@ export const SettingsScreen: React.FC = () => {
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="url"
+            accessibilityLabel="Raspberry Pi URL"
           />
           {inputUrl.length > 0 && (
-            <TouchableOpacity onPress={() => setInputUrl('')}>
+            <TouchableOpacity
+              onPress={() => setInputUrl('')}
+              accessibilityLabel="Clear URL"
+              accessibilityRole="button"
+            >
               <Ionicons name="close" size={16} color={colors.textMuted} />
             </TouchableOpacity>
           )}
@@ -96,6 +162,8 @@ export const SettingsScreen: React.FC = () => {
               style={[styles.preset, inputUrl === p.url && styles.presetActive]}
               onPress={() => setInputUrl(p.url)}
               activeOpacity={0.6}
+              accessibilityLabel={`Set URL to ${p.label}`}
+              accessibilityRole="button"
             >
               <Text
                 style={[
@@ -116,6 +184,8 @@ export const SettingsScreen: React.FC = () => {
             onPress={handleTest}
             disabled={isTesting}
             activeOpacity={0.6}
+            accessibilityLabel="Test connection"
+            accessibilityRole="button"
           >
             {isTesting ? (
               <ActivityIndicator size="small" color={colors.textSecondary} />
@@ -128,6 +198,8 @@ export const SettingsScreen: React.FC = () => {
             style={styles.saveButton}
             onPress={handleSave}
             activeOpacity={0.7}
+            accessibilityLabel="Save connection URL"
+            accessibilityRole="button"
           >
             <Text style={styles.saveButtonText}>Save</Text>
           </TouchableOpacity>
@@ -149,9 +221,78 @@ export const SettingsScreen: React.FC = () => {
             <Text style={styles.resultText}>
               {testResult.success
                 ? `Connected · ${testResult.latencyMs}ms`
-                : testResult.error || 'Failed'}
+                : testResult.error || 'ELO couldn\'t connect'}
             </Text>
           </View>
+        )}
+
+        {/* Section: System Diagnostics */}
+        <Text style={[styles.sectionTitle, { marginTop: spacing.xxl }]}>SYSTEM</Text>
+        <View style={styles.diagnosticsPanel}>
+          <DiagnosticRow
+            label="Pi"
+            value={isConnected ? 'Connected' : 'Offline'}
+            active={isConnected && eloOnline}
+          />
+          <DiagnosticRow
+            label="AI Engine"
+            value={aiConnected && isConnected ? 'Connected' : 'Offline'}
+            active={aiConnected && isConnected}
+          />
+          <DiagnosticRow
+            label="Audio"
+            value={audioReady && isConnected ? 'Ready' : 'Offline'}
+            active={audioReady && isConnected}
+          />
+          <DiagnosticRow
+            label="Display"
+            value={displayConnected && isConnected ? 'Connected' : 'Offline'}
+            active={displayConnected && isConnected}
+          />
+
+          {/* Camera diagnostic row */}
+          {cameraStatus ? (
+            <>
+              <DiagnosticRow
+                label="Camera"
+                value={cameraStatus.available ? 'Ready' : 'Unavailable'}
+                active={cameraStatus.available}
+              />
+              {cameraStatus.available && (
+                <DiagnosticRow
+                  label=""
+                  value={`${cameraStatus.width}×${cameraStatus.height} · ${cameraStatus.fps}fps · ${cameraStatus.format.toUpperCase()}`}
+                />
+              )}
+            </>
+          ) : (
+            <DiagnosticRow
+              label="Camera"
+              value={isFetchingCamera ? 'Checking…' : 'Tap to check'}
+              isLoading={isFetchingCamera}
+            />
+          )}
+
+          {/* Ping row */}
+          {testResult?.success && testResult.latencyMs !== undefined && (
+            <DiagnosticRow
+              label="Ping"
+              value={`${testResult.latencyMs} ms`}
+            />
+          )}
+        </View>
+
+        {/* Check camera button */}
+        {!cameraStatus && !isFetchingCamera && isConnected && (
+          <TouchableOpacity
+            style={styles.checkCameraButton}
+            onPress={fetchCameraStatus}
+            activeOpacity={0.7}
+            accessibilityLabel="Check camera status"
+            accessibilityRole="button"
+          >
+            <Text style={styles.checkCameraText}>Check camera</Text>
+          </TouchableOpacity>
         )}
 
         {/* Collapsible guide */}
@@ -159,6 +300,9 @@ export const SettingsScreen: React.FC = () => {
           style={styles.guideToggle}
           onPress={() => setShowGuide(!showGuide)}
           activeOpacity={0.6}
+          accessibilityLabel={showGuide ? 'Hide setup guide' : 'Show setup guide'}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: showGuide }}
         >
           <Text style={styles.guideToggleText}>
             {showGuide ? 'Hide setup guide' : 'Need help?'}
@@ -180,8 +324,12 @@ export const SettingsScreen: React.FC = () => {
               <Text style={styles.code}>hostname -I</Text> on the Pi
             </Text>
             <Text style={styles.guideStep}>
-              3. Enter <Text style={styles.code}>http://&lt;PI_IP&gt;:8090</Text> above or configure{' '}
+              3. Enter <Text style={styles.code}>http://{'<PI_IP>'}:8090</Text> above or configure{' '}
               <Text style={styles.code}>EXPO_PUBLIC_ELO_CORE_URL</Text> in .env
+            </Text>
+            <Text style={styles.guideStep}>
+              4. Camera stream is available at <Text style={styles.code}>/camera/stream</Text> (MJPEG) or{' '}
+              <Text style={styles.code}>/camera/frame</Text> (JPEG). All video is local-only.
             </Text>
           </View>
         )}
@@ -189,6 +337,42 @@ export const SettingsScreen: React.FC = () => {
     </SafeAreaView>
   );
 };
+
+const diagStyles = StyleSheet.create({
+  row: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.sm + 2,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+  label: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    fontWeight: '500',
+    flex: 1,
+  },
+  valueGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: spacing.xs + 2,
+  },
+  value: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  valueNeutral: {
+    fontSize: 12,
+    color: colors.textMuted,
+    fontWeight: '400',
+  },
+});
 
 const styles = StyleSheet.create({
   container: {
@@ -209,6 +393,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.md,
     paddingBottom: spacing.xxxl,
+  },
+  sectionTitle: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+    letterSpacing: 1.5,
+    marginBottom: spacing.md,
   },
   savedText: {
     fontSize: 13,
@@ -236,6 +427,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: spacing.sm,
     marginBottom: spacing.xl,
+    flexWrap: 'wrap',
   },
   preset: {
     paddingHorizontal: spacing.md,
@@ -302,6 +494,29 @@ const styles = StyleSheet.create({
   },
   resultText: {
     fontSize: 13,
+    color: colors.textSecondary,
+  },
+  diagnosticsPanel: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.lg,
+  },
+  checkCameraButton: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    marginBottom: spacing.xl,
+  },
+  checkCameraText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: colors.textSecondary,
   },
   guideToggle: {
