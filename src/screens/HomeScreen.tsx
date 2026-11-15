@@ -1,4 +1,18 @@
-import React, { useState, useRef, useEffect } from 'react';
+/**
+ * HomeScreen.tsx  —  ELO Follow Console (V2)
+ *
+ * Camera-first layout:
+ *   A. Compact inline header (ELO wordmark + Pi state pill)
+ *   B. CameraPanel — full-width 4:3 live feed with bbox overlays
+ *   C. Person count line + PersonRail
+ *   D. Follow target summary line
+ *   E. Action dock: FOLLOW · INTERACT · STOP
+ *   F. Command error banner
+ *   G. Secondary fold: SubsystemStatusBar, SafetyStatusCard,
+ *      SessionTimeIndicator, PrivacyCard
+ */
+
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -6,106 +20,198 @@ import {
   ScrollView,
   RefreshControl,
   TouchableOpacity,
-  Animated,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useNavigation } from '@react-navigation/native';
-import { BottomTabNavigationProp } from '@react-navigation/bottom-tabs';
+import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+
 import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
+import { useV2 } from '../context/V2Context';
 
-// Components
-import { EloIdentityHeader } from '../components/EloIdentityHeader';
-import { ConnectionBanner } from '../components/ConnectionBanner';
-import { RobotStateBadge } from '../components/RobotStateBadge';
-import { TargetSelector } from '../components/TargetSelector';
+import { CameraPanel } from '../components/CameraPanel';
+import { PersonRail } from '../components/PersonRail';
+import { SubsystemStatusBar } from '../components/SubsystemStatusBar';
 import { SafetyStatusCard } from '../components/SafetyStatusCard';
-import { CommandButtons } from '../components/CommandButtons';
 import { SessionTimeIndicator } from '../components/SessionTimeIndicator';
 import { PrivacyCard } from '../components/PrivacyCard';
-import { SubsystemStatusBar } from '../components/SubsystemStatusBar';
-import { RootTabParamList } from '../types';
 
-type HomeScreenNavProp = BottomTabNavigationProp<RootTabParamList, 'Home'>;
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function labelFromTrackId(track_id: string, label?: string): string {
+  if (label) return label;
+  const match = track_id.match(/(\d+)$/);
+  return match ? `Person ${parseInt(match[1], 10)}` : `Person ${track_id.slice(-3)}`;
+}
+
+// ─── Component ─────────────────────────────────────────────────────────────
 
 export const HomeScreen: React.FC = () => {
-  const navigation = useNavigation<HomeScreenNavProp>();
+  // ── V1 ELO context ────────────────────────────────────────────────────────
   const {
-    // Legacy / general state
-    robotMode,
-    modeUpdatedAt,
     isConnected,
     isUnreachable,
     retryConnection,
-
-    // Phase C states & commands
-    eloOnline,
-    eloState,
-    selectedTargetId,
-    targets,
     obstacleDetected,
     obstacleDetail,
     aiConnected,
     audioReady,
-    commandPending,
-    commandError,
-    clearCommandError,
-    selectTarget,
-    requestFollow,
-    requestInteract,
-    requestStop,
+    isMuted,
+    excludeFromReport,
+    setMuteMicrophone,
+    setExcludeFromReport,
+    isTogglingMute,
+    isTogglingVisibility,
+    commandError: v1CommandError,
+    clearCommandError: clearV1CommandError,
   } = useELO();
 
+  // ── V2 context ────────────────────────────────────────────────────────────
+  const {
+    isWsConnected,
+    latestState,
+    displayedFrame,
+    isFrameStale,
+    selectionPendingId,
+    commandPending,
+    commandError: v2CommandError,
+    clearCommandError: clearV2CommandError,
+    selectByPoint,
+    sendFollow,
+    sendStop,
+    sendInteract,
+    activateControl,
+    deactivateControl,
+  } = useV2();
+
+  // ── Focus lifecycle ───────────────────────────────────────────────────────
+  useFocusEffect(
+    useCallback(() => {
+      activateControl();
+      return () => {
+        deactivateControl();
+      };
+    }, [activateControl, deactivateControl]),
+  );
+
+  // ── Pull-to-refresh ───────────────────────────────────────────────────────
   const [refreshing, setRefreshing] = useState(false);
-
-  // Entrance animations for sections
-  const animHeader = useRef(new Animated.Value(0)).current;
-  const animHero = useRef(new Animated.Value(0)).current;
-  const animControls = useRef(new Animated.Value(0)).current;
-  const animSecondary = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    Animated.stagger(100, [
-      Animated.timing(animHeader, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animHero, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animControls, { toValue: 1, duration: 400, useNativeDriver: true }),
-      Animated.timing(animSecondary, { toValue: 1, duration: 400, useNativeDriver: true }),
-    ]).start();
-  }, []);
-
-  const onRefresh = async () => {
+  const onRefresh = useCallback(async () => {
     setRefreshing(true);
     try {
       await retryConnection();
     } finally {
       setRefreshing(false);
     }
-  };
+  }, [retryConnection]);
 
-  const handleOpenSettings = () => {
-    navigation.navigate('Settings');
-  };
+  // ── Derived state ─────────────────────────────────────────────────────────
+  const confirmedTargetId = latestState?.selection.target_id ?? null;
+  const motionEnabled = latestState?.motion.enabled ?? true;
+  const safetyLocked = latestState?.robot.safety_locked ?? false;
+  const robotMode = latestState?.robot.mode ?? 'stopped';
 
-  // Find label of confirmed selected target
-  const confirmedTarget = targets.find((t) => t.id === selectedTargetId);
-  const targetLabel = confirmedTarget ? confirmedTarget.label : selectedTargetId ? `Target #${selectedTargetId}` : null;
+  const controlDisabled = !isWsConnected || !!commandPending;
 
-  // Effective robot state (prefer Phase C eloState, fallback to robotMode)
-  const currentEffectiveState = eloOnline ? eloState : robotMode;
+  const targets = displayedFrame?.targets ?? latestState?.targets ?? [];
+  const frameTimestamp = displayedFrame?.frameTimestamp ?? 0;
 
+  // Person labels for display
+  const confirmedTarget = targets.find((t) => t.track_id === confirmedTargetId);
+  const confirmedLabel = confirmedTarget
+    ? labelFromTrackId(confirmedTarget.track_id, confirmedTarget.label)
+    : confirmedTargetId
+    ? `Person ${confirmedTargetId.slice(-3)}`
+    : null;
+
+  const pendingTarget = targets.find((t) => t.track_id === selectionPendingId);
+  const pendingLabel = pendingTarget
+    ? labelFromTrackId(pendingTarget.track_id, pendingTarget.label)
+    : selectionPendingId
+    ? `Person ${selectionPendingId.slice(-3)}`
+    : null;
+
+  // Check if confirmed target is currently lost from view
+  const isTargetLost = Boolean(confirmedTargetId && !confirmedTarget);
+
+  // Active error — V2 takes priority
+  const activeError = v2CommandError ?? v1CommandError;
+  const clearActiveError = v2CommandError
+    ? clearV2CommandError
+    : clearV1CommandError;
+
+  // Follow button state
+  const followDisabled =
+    !isWsConnected ||
+    !!commandPending ||
+    !confirmedTargetId ||
+    isTargetLost ||
+    !motionEnabled ||
+    safetyLocked;
+
+  const followLabel = confirmedTargetId
+    ? `Follow ${confirmedLabel ?? 'Person'}`
+    : 'Select a Person First';
+
+  const isMoving = robotMode === 'moving';
+  const isInteracting = robotMode === 'interacting';
+
+  // Pi state pill label
+  const piModeLabel = latestState
+    ? `PI ONLINE · ${robotMode.toUpperCase()}`
+    : isWsConnected
+    ? 'PI ONLINE'
+    : 'PI OFFLINE';
+
+  const piDotColor = isWsConnected ? colors.dotOnline : colors.accent;
+
+  // Motion disabled reason
+  const motionReason = isTargetLost
+    ? 'Selected person is not visible in current frame'
+    : !motionEnabled || safetyLocked
+    ? latestState?.motion.reason ?? 'Motion disabled by Pi'
+    : null;
+
+  // Target summary line
+  let targetSummary: string;
+  if (confirmedTargetId && confirmedLabel) {
+    if (isTargetLost) {
+      targetSummary = `Following target: ${confirmedLabel} (lost from view) · range unavailable`;
+    } else {
+      const rangeTarget = confirmedTarget;
+      const rangeStr =
+        rangeTarget?.range_m != null
+          ? `${rangeTarget.range_m.toFixed(1)}m`
+          : 'range unavailable';
+      targetSummary = `Following target: ${confirmedLabel} · ${rangeStr}`;
+    }
+  } else if (selectionPendingId && pendingLabel) {
+    targetSummary = `Selecting ${pendingLabel}...`;
+  } else {
+    targetSummary = 'No target selected — tap a person in the feed';
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container} edges={['top', 'left', 'right']}>
-      {/* 1. Identity Header */}
-      <Animated.View style={{ opacity: animHeader }}>
-        <EloIdentityHeader
-          isOnline={isConnected && eloOnline}
-          lastUpdated={modeUpdatedAt}
-        />
-      </Animated.View>
+      {/* ── A. Compact inline header ───────────────────────────────────── */}
+      <View style={styles.header}>
+        <Text style={styles.wordmark}>ELO</Text>
+        <View style={styles.headerRight}>
+          {isUnreachable && (
+            <Text style={styles.unreachableText}>Pi unreachable</Text>
+          )}
+          <View style={styles.piPill}>
+            <View style={[styles.piDot, { backgroundColor: piDotColor }]} />
+            <Text style={styles.piPillText}>{piModeLabel}</Text>
+          </View>
+        </View>
+      </View>
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -113,97 +219,248 @@ export const HomeScreen: React.FC = () => {
             tintColor={colors.textMuted}
           />
         }
-        showsVerticalScrollIndicator={false}
       >
-        {/* Connection banner if offline */}
-        <ConnectionBanner onPressSettings={handleOpenSettings} />
+        {/* ── B. Camera Panel ──────────────────────────────────────────── */}
+        <CameraPanel
+          displayedFrame={displayedFrame}
+          isFrameStale={isFrameStale}
+          isWsConnected={isWsConnected}
+          confirmedTargetId={confirmedTargetId}
+          pendingTargetId={selectionPendingId}
+          onTapTarget={selectByPoint}
+          disabled={controlDisabled}
+        />
 
-        {/* Command Error Alert (if any rejected command) */}
-        {commandError ? (
+        {/* ── C. Person count + rail ───────────────────────────────────── */}
+        <View style={styles.personCountRow}>
+          {targets.length > 0 ? (
+            <Text style={styles.personCountText}>
+              {targets.length} {targets.length === 1 ? 'person' : 'people'} in view
+            </Text>
+          ) : (
+            <Text style={styles.personCountText}>
+              No people detected in the current frame
+            </Text>
+          )}
+        </View>
+
+        {targets.length > 0 && (
+          <PersonRail
+            targets={targets}
+            confirmedTargetId={confirmedTargetId}
+            pendingTargetId={selectionPendingId}
+            frameTimestamp={frameTimestamp}
+            onSelectPerson={selectByPoint}
+            disabled={controlDisabled}
+          />
+        )}
+
+        {/* ── D. Follow target summary ─────────────────────────────────── */}
+        <View style={styles.targetSummaryRow}>
+          <Text style={styles.targetSummaryText}>{targetSummary}</Text>
+        </View>
+
+        {/* ── F. Command error banner ──────────────────────────────────── */}
+        {activeError ? (
           <View style={styles.errorBanner}>
-            <Ionicons name="alert-circle-outline" size={18} color={colors.accent} style={{ marginRight: spacing.sm }} />
-            <Text style={styles.errorBannerText}>{commandError}</Text>
-            <TouchableOpacity onPress={clearCommandError} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+            <Ionicons
+              name="alert-circle-outline"
+              size={18}
+              color={colors.accent}
+              style={{ marginRight: spacing.sm }}
+            />
+            <Text style={styles.errorBannerText}>{activeError}</Text>
+            <TouchableOpacity
+              onPress={clearActiveError}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel="Dismiss error"
+            >
               <Ionicons name="close" size={18} color={colors.textSecondary} />
             </TouchableOpacity>
           </View>
         ) : null}
 
-        {/* 2. Hero: Robot State Badge */}
-        <Animated.View style={{ opacity: animHero }}>
-          <RobotStateBadge
-            mode={currentEffectiveState}
-            updatedAt={modeUpdatedAt}
-            isConnected={isConnected}
-            targetLabel={targetLabel}
-            commandPending={commandPending}
-          />
-        </Animated.View>
+        {/* ── E. Action dock ───────────────────────────────────────────── */}
+        <View style={styles.actionDock}>
+          {/* FOLLOW button (flex 2) */}
+          <View style={{ flex: 2 }}>
+            <TouchableOpacity
+              onPress={() => sendFollow()}
+              disabled={followDisabled}
+              accessibilityLabel={followLabel}
+              style={[
+                styles.followBtn,
+                followDisabled && styles.btnDisabled,
+                isMoving && styles.followBtnActive,
+              ]}
+            >
+              {commandPending === 'follow' ? (
+                <ActivityIndicator size="small" color={colors.textPrimary} />
+              ) : (
+                <Text
+                  style={[
+                    styles.followBtnText,
+                    followDisabled && styles.btnTextDisabled,
+                  ]}
+                >
+                  {isMoving ? '● ' : ''}{followLabel}
+                </Text>
+              )}
+            </TouchableOpacity>
+            {/* Motion disabled reason */}
+            {motionReason && (
+              <Text style={styles.motionReasonText}>{motionReason}</Text>
+            )}
+          </View>
 
-        {/* 3. Subsystem Status Bar (AI & Audio) */}
-        <Animated.View style={{ opacity: animHero }}>
+          {/* INTERACT button (smaller, only when not interacting) */}
+          {!isInteracting && (
+            <TouchableOpacity
+              onPress={() => sendInteract()}
+              disabled={!isWsConnected || !!commandPending || !confirmedTargetId}
+              accessibilityLabel="Interact"
+              style={[
+                styles.interactBtn,
+                (!isWsConnected || !!commandPending || !confirmedTargetId) &&
+                  styles.btnDisabled,
+              ]}
+            >
+              {commandPending === 'interact' ? (
+                <ActivityIndicator size="small" color={colors.textSecondary} />
+              ) : (
+                <Text style={styles.interactBtnText}>Interact</Text>
+              )}
+            </TouchableOpacity>
+          )}
+
+          {/* STOP button (flex 1, red) */}
+          <TouchableOpacity
+            onPress={() => sendStop()}
+            disabled={!isWsConnected}
+            accessibilityLabel="Stop"
+            style={[
+              styles.stopBtn,
+              { flex: 1 },
+              !isWsConnected && styles.btnDisabled,
+            ]}
+          >
+            {commandPending === 'stop' ? (
+              <ActivityIndicator size="small" color={colors.textPrimary} />
+            ) : (
+              <Text style={styles.stopBtnText}>STOP</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+
+        {/* ── G. Secondary fold ────────────────────────────────────────── */}
+        <View style={styles.secondaryFold}>
           <SubsystemStatusBar
             aiConnected={aiConnected}
             audioReady={audioReady}
             isConnected={isConnected}
           />
-        </Animated.View>
-
-        {/* 4. Controls Section: Target Selector, Safety Card, Command Buttons */}
-        <Animated.View style={{ opacity: animControls }}>
-          {/* Target Selector */}
-          <TargetSelector
-            targets={targets}
-            selectedTargetId={selectedTargetId}
-            commandPending={commandPending}
-            isConnected={isConnected}
-            onSelectTarget={selectTarget}
-          />
-
-          {/* Safety & Obstacle Card */}
           <SafetyStatusCard
             obstacleDetected={obstacleDetected}
             obstacleDetail={obstacleDetail}
-            robotState={currentEffectiveState}
+            robotState={robotMode === 'moving' ? 'moving' : robotMode === 'interacting' ? 'interacting' : 'stopped'}
           />
-
-          {/* Primary Command Buttons: FOLLOW, INTERACT, STOP */}
-          <CommandButtons
-            currentMode={currentEffectiveState}
-            commandPending={commandPending}
-            isConnected={isConnected}
-            selectedTargetId={selectedTargetId}
-            onRequestFollow={requestFollow}
-            onRequestInteract={requestInteract}
-            onRequestStop={requestStop}
-          />
-        </Animated.View>
-
-        {/* 5. Secondary Information & Controls */}
-        <Animated.View style={{ opacity: animSecondary }}>
           <SessionTimeIndicator />
           <PrivacyCard />
-        </Animated.View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
 };
+
+// ─── Styles ────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: colors.background,
   },
+  // ── Header ───────────────────────────────────────────────────────────────
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  wordmark: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: colors.textPrimary,
+    letterSpacing: 2,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  unreachableText: {
+    fontSize: 11,
+    color: colors.textSecondary,
+    letterSpacing: 0.3,
+  },
+  piPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.full,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+    gap: 5,
+  },
+  piDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  piPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 0.8,
+    textTransform: 'uppercase',
+  },
+  // ── Scroll ───────────────────────────────────────────────────────────────
   scrollContent: {
     paddingBottom: spacing.xxxl,
+    paddingTop: spacing.md,
+    gap: spacing.sm,
   },
+  // ── Person count ─────────────────────────────────────────────────────────
+  personCountRow: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  personCountText: {
+    fontSize: 12,
+    color: colors.textSecondary,
+    letterSpacing: 0.3,
+  },
+  // ── Target summary ────────────────────────────────────────────────────────
+  targetSummaryRow: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.xs,
+  },
+  targetSummaryText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    letterSpacing: 0.2,
+  },
+  // ── Error banner ──────────────────────────────────────────────────────────
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.accentMuted,
     borderRadius: radius.md,
     marginHorizontal: spacing.lg,
-    marginTop: spacing.md,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm + 2,
     borderWidth: 1,
@@ -214,5 +471,87 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.accent,
     fontWeight: '500',
+  },
+  // ── Action dock ───────────────────────────────────────────────────────────
+  actionDock: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
+    marginBottom: spacing.sm,
+  },
+  followBtn: {
+    backgroundColor: colors.surfaceElevated,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  followBtnActive: {
+    borderColor: colors.stateMoving,
+    borderWidth: 2,
+  },
+  followBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.textPrimary,
+    letterSpacing: 0.3,
+    textAlign: 'center',
+  },
+  interactBtn: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  interactBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  stopBtn: {
+    backgroundColor: colors.accentMuted,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.accent,
+    paddingVertical: spacing.md,
+    paddingHorizontal: spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 52,
+  },
+  stopBtnText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: colors.accent,
+    letterSpacing: 1.5,
+  },
+  btnDisabled: {
+    opacity: 0.4,
+  },
+  btnTextDisabled: {
+    color: colors.textMuted,
+  },
+  motionReasonText: {
+    fontSize: 11,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: spacing.xs,
+    paddingHorizontal: spacing.xs,
+  },
+  // ── Secondary fold ────────────────────────────────────────────────────────
+  secondaryFold: {
+    marginTop: spacing.md,
+    gap: spacing.sm,
   },
 });

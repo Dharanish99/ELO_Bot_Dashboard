@@ -1,7 +1,7 @@
 # ELO Bot Dashboard — Complete Architecture, System Design & Engineering Handoff
 
 > **Version:** 1.0.0 (Phase C Architecture)  
-> **Platform:** React Native (0.86.3) / Expo (SDK ~57.0.22) / TypeScript (~6.0.3)  
+> **Platform:** React Native (0.88.1) / Expo (SDK ~58.0.25) / TypeScript (~6.0.3)  
 > **Target Device Ecosystem:** iOS, Android, Web (Companion app for ELO AI Physical Robot)  
 > **Protocol:** Direct REST/HTTP Telemetry & Control over Local Area Network (Default Port: 8090)
 

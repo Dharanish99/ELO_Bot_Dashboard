@@ -14,6 +14,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { colors, radius, spacing } from '../theme';
 import { useELO } from '../context/ELOContext';
 import { DEFAULT_ELO_CORE_URL } from '../api/client';
+import { deriveWsUrl } from '../api/v2ws';
 
 const QUICK_IPS = [
   { label: 'Pi (Default)', url: DEFAULT_ELO_CORE_URL },
@@ -21,15 +22,67 @@ const QUICK_IPS = [
   { label: 'raspberrypi.local', url: 'http://raspberrypi.local:8090' },
 ];
 
+function testWsConnection(
+  wsUrl: string,
+  timeoutMs = 2500,
+): Promise<{ success: boolean; latencyMs?: number; error?: string }> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let finished = false;
+    let ws: WebSocket | null = null;
+    const timer = setTimeout(() => {
+      if (!finished) {
+        finished = true;
+        try {
+          ws?.close();
+        } catch {}
+        resolve({ success: false, error: 'WebSocket timeout' });
+      }
+    }, timeoutMs);
+
+    try {
+      ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          const latency = Date.now() - start;
+          try {
+            ws?.close();
+          } catch {}
+          resolve({ success: true, latencyMs: latency });
+        }
+      };
+      ws.onerror = (e: any) => {
+        if (!finished) {
+          finished = true;
+          clearTimeout(timer);
+          resolve({ success: false, error: e?.message || 'WebSocket connection failed' });
+        }
+      };
+    } catch (err: any) {
+      if (!finished) {
+        finished = true;
+        clearTimeout(timer);
+        resolve({ success: false, error: err?.message || 'Failed to open WebSocket' });
+      }
+    }
+  });
+}
+
 export const SettingsScreen: React.FC = () => {
   const { baseUrl, setBaseUrl, testConnectionUrl } = useELO();
 
   const [inputUrl, setInputUrl] = useState<string>(baseUrl);
   const [isTesting, setIsTesting] = useState<boolean>(false);
   const [testResult, setTestResult] = useState<{
-    success: boolean;
-    latencyMs?: number;
-    error?: string;
+    httpSuccess: boolean;
+    httpLatencyMs?: number;
+    httpError?: string;
+    wsSuccess: boolean;
+    wsLatencyMs?: number;
+    wsError?: string;
+    wsUrl?: string;
   } | null>(null);
   const [saved, setSaved] = useState<boolean>(false);
   const [showGuide, setShowGuide] = useState<boolean>(false);
@@ -39,8 +92,20 @@ export const SettingsScreen: React.FC = () => {
     setIsTesting(true);
     setTestResult(null);
     try {
-      const result = await testConnectionUrl(inputUrl);
-      setTestResult(result);
+      const wsUrl = deriveWsUrl(inputUrl);
+      const [httpRes, wsRes] = await Promise.all([
+        testConnectionUrl(inputUrl),
+        testWsConnection(wsUrl),
+      ]);
+      setTestResult({
+        httpSuccess: httpRes.success,
+        httpLatencyMs: httpRes.latencyMs,
+        httpError: httpRes.error,
+        wsSuccess: wsRes.success,
+        wsLatencyMs: wsRes.latencyMs,
+        wsError: wsRes.error,
+        wsUrl,
+      });
     } finally {
       setIsTesting(false);
     }
@@ -133,24 +198,44 @@ export const SettingsScreen: React.FC = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Test result */}
+        {/* Test result: HTTP and V2 WebSocket */}
         {testResult && (
-          <View style={styles.resultRow}>
-            <View
-              style={[
-                styles.resultDot,
-                {
-                  backgroundColor: testResult.success
-                    ? colors.dotOnline
-                    : colors.dotOffline,
-                },
-              ]}
-            />
-            <Text style={styles.resultText}>
-              {testResult.success
-                ? `Connected · ${testResult.latencyMs}ms`
-                : testResult.error || 'Failed'}
-            </Text>
+          <View style={styles.resultsContainer}>
+            <View style={styles.resultRow}>
+              <View
+                style={[
+                  styles.resultDot,
+                  {
+                    backgroundColor: testResult.httpSuccess
+                      ? colors.dotOnline
+                      : colors.dotOffline,
+                  },
+                ]}
+              />
+              <Text style={styles.resultText}>
+                {testResult.httpSuccess
+                  ? `HTTP (Port 8090): OK · ${testResult.httpLatencyMs}ms`
+                  : `HTTP (Port 8090): ${testResult.httpError || 'Failed'}`}
+              </Text>
+            </View>
+
+            <View style={styles.resultRow}>
+              <View
+                style={[
+                  styles.resultDot,
+                  {
+                    backgroundColor: testResult.wsSuccess
+                      ? colors.dotOnline
+                      : colors.dotOffline,
+                  },
+                ]}
+              />
+              <Text style={styles.resultText}>
+                {testResult.wsSuccess
+                  ? `V2 WebSocket: Connected · ${testResult.wsLatencyMs}ms`
+                  : `V2 WebSocket: ${testResult.wsError || 'Unreachable'}`}
+              </Text>
+            </View>
           </View>
         )}
 
@@ -289,11 +374,14 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.background,
   },
+  resultsContainer: {
+    marginBottom: spacing.xl,
+    gap: spacing.sm,
+  },
   resultRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    marginBottom: spacing.xl,
   },
   resultDot: {
     width: 6,
